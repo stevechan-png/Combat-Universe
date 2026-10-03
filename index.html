@@ -1,0 +1,2149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Combat</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0714;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    display: block;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="480" height="270"></canvas>
+<input id="nameInput" type="text" maxlength="10" autocomplete="off" spellcheck="false" aria-label="Player name" style="position:fixed;left:-9999px;top:0;opacity:0">
+<script type="module">
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+const VIEW_W = 480, VIEW_H = 270;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+function resize() {
+  const s = Math.min(innerWidth / VIEW_W, innerHeight / VIEW_H);
+  const scale = s >= 1 ? Math.floor(s) || 1 : s;
+  canvas.style.width = VIEW_W * scale + 'px';
+  canvas.style.height = VIEW_H * scale + 'px';
+}
+addEventListener('resize', resize);
+resize();
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const t = amt < 0 ? 0 : 255, p = Math.abs(amt);
+  r = Math.round((t - r) * p + r);
+  g = Math.round((t - g) * p + g);
+  b = Math.round((t - b) * p + b);
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+
+// ---------------------------------------------------------------------------
+// Pixel font (5x5)
+// ---------------------------------------------------------------------------
+const FONT = {
+  A: ['.###.', '#...#', '#####', '#...#', '#...#'],
+  B: ['####.', '#...#', '####.', '#...#', '####.'],
+  C: ['.####', '#....', '#....', '#....', '.####'],
+  D: ['####.', '#...#', '#...#', '#...#', '####.'],
+  E: ['#####', '#....', '####.', '#....', '#####'],
+  F: ['#####', '#....', '####.', '#....', '#....'],
+  G: ['.####', '#....', '#..##', '#...#', '.####'],
+  H: ['#...#', '#...#', '#####', '#...#', '#...#'],
+  I: ['#####', '..#..', '..#..', '..#..', '#####'],
+  J: ['..###', '...#.', '...#.', '#..#.', '.##..'],
+  K: ['#...#', '#..#.', '###..', '#..#.', '#...#'],
+  L: ['#....', '#....', '#....', '#....', '#####'],
+  M: ['#...#', '##.##', '#.#.#', '#...#', '#...#'],
+  N: ['#...#', '##..#', '#.#.#', '#..##', '#...#'],
+  O: ['.###.', '#...#', '#...#', '#...#', '.###.'],
+  P: ['####.', '#...#', '####.', '#....', '#....'],
+  Q: ['.###.', '#...#', '#.#.#', '#..#.', '.##.#'],
+  R: ['####.', '#...#', '####.', '#..#.', '#...#'],
+  S: ['.####', '#....', '.###.', '....#', '####.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#...#', '#...#', '#...#', '#...#', '.###.'],
+  V: ['#...#', '#...#', '#...#', '.#.#.', '..#..'],
+  W: ['#...#', '#...#', '#.#.#', '##.##', '#...#'],
+  X: ['#...#', '.#.#.', '..#..', '.#.#.', '#...#'],
+  Y: ['#...#', '.#.#.', '..#..', '..#..', '..#..'],
+  Z: ['#####', '...#.', '..#..', '.#...', '#####'],
+  0: ['.###.', '#..##', '#.#.#', '##..#', '.###.'],
+  1: ['..#..', '.##..', '..#..', '..#..', '.###.'],
+  2: ['####.', '....#', '.###.', '#....', '#####'],
+  3: ['####.', '....#', '.###.', '....#', '####.'],
+  4: ['#..#.', '#..#.', '#####', '...#.', '...#.'],
+  5: ['#####', '#....', '####.', '....#', '####.'],
+  6: ['.###.', '#....', '####.', '#...#', '.###.'],
+  7: ['#####', '....#', '...#.', '..#..', '..#..'],
+  8: ['.###.', '#...#', '.###.', '#...#', '.###.'],
+  9: ['.###.', '#...#', '.####', '....#', '.###.'],
+  ' ': ['.....', '.....', '.....', '.....', '.....'],
+  '.': ['.....', '.....', '.....', '.....', '..#..'],
+  ',': ['.....', '.....', '.....', '..#..', '.#...'],
+  ':': ['.....', '..#..', '.....', '..#..', '.....'],
+  '-': ['.....', '.....', '#####', '.....', '.....'],
+  '+': ['.....', '..#..', '.###.', '..#..', '.....'],
+  '/': ['....#', '...#.', '..#..', '.#...', '#....'],
+  '!': ['..#..', '..#..', '..#..', '.....', '..#..'],
+  '?': ['####.', '....#', '..##.', '.....', '..#..'],
+  '(': ['..#..', '.#...', '.#...', '.#...', '..#..'],
+  ')': ['..#..', '...#.', '...#.', '...#.', '..#..'],
+  '>': ['.#...', '..#..', '...#.', '..#..', '.#...'],
+  '<': ['...#.', '..#..', '.#...', '..#..', '...#.'],
+};
+
+function textWidth(str, s = 1) {
+  return String(str).length * 6 * s - s;
+}
+
+function drawRawText(g, str, x, y, s, col) {
+  g.fillStyle = col;
+  for (let i = 0; i < str.length; i++) {
+    const gl = FONT[str[i]] || FONT['?'];
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        if (gl[r][c] === '#') g.fillRect(x + i * 6 * s + c * s, y + r * s, s, s);
+      }
+    }
+  }
+}
+
+function drawText(g, str, x, y, s = 1, col = '#fff', align = 'left', shadow = null) {
+  str = String(str).toUpperCase();
+  const w = textWidth(str, s);
+  if (align === 'center') x -= Math.floor(w / 2);
+  else if (align === 'right') x -= w;
+  x = Math.round(x); y = Math.round(y);
+  if (shadow) drawRawText(g, str, x + Math.max(1, s >> 1), y + Math.max(1, s >> 1), s, shadow);
+  drawRawText(g, str, x, y, s, col);
+}
+
+// ---------------------------------------------------------------------------
+// World
+// ---------------------------------------------------------------------------
+const SECTION_H = 540, SECTIONS = 5;
+const WORLD_W = 960, WORLD_H = SECTION_H * SECTIONS;
+const GROUND_Y = WORLD_H - 32;
+const BASE_Y = WORLD_H - SECTION_H;
+// Section 0 is the bottom of the map, SECTIONS - 1 the top.
+const sectionOf = y => Math.max(0, Math.min(SECTIONS - 1, Math.floor((WORLD_H - y) / SECTION_H)));
+
+const P = 'plat', W = 'wall';
+
+// Hand-made bottom section, in section-local coordinates.
+const BASE_LAYOUT = [
+  // low platforms
+  { x: 60, y: 450, w: 80, h: 12, t: P },
+  { x: 220, y: 420, w: 96, h: 12, t: P },
+  { x: 400, y: 450, w: 96, h: 12, t: P },
+  { x: 580, y: 420, w: 96, h: 12, t: P },
+  { x: 760, y: 450, w: 100, h: 12, t: P },
+
+  // mid platforms
+  { x: 110, y: 350, w: 96, h: 12, t: P },
+  { x: 300, y: 320, w: 80, h: 12, t: P },
+  { x: 470, y: 340, w: 112, h: 12, t: P },
+  { x: 660, y: 320, w: 96, h: 12, t: P },
+  { x: 800, y: 360, w: 90, h: 12, t: P },
+
+  // high platforms
+  { x: 40, y: 250, w: 80, h: 12, t: P },
+  { x: 200, y: 220, w: 96, h: 12, t: P },
+  { x: 420, y: 220, w: 120, h: 12, t: P },
+  { x: 620, y: 230, w: 96, h: 12, t: P },
+  { x: 800, y: 250, w: 110, h: 12, t: P },
+
+  // stepping stones up to the generated sections
+  { x: 130, y: 290, w: 48, h: 12, t: P },
+  { x: 560, y: 280, w: 48, h: 12, t: P },
+  { x: 250, y: 165, w: 44, h: 12, t: P },
+  { x: 572, y: 170, w: 44, h: 12, t: P },
+  { x: 680, y: 175, w: 48, h: 12, t: P },
+
+  // top platforms
+  { x: 140, y: 130, w: 96, h: 12, t: P },
+  { x: 400, y: 100, w: 160, h: 12, t: P },
+  { x: 700, y: 120, w: 112, h: 12, t: P },
+
+  // walls / pillars
+  { x: 180, y: 380, w: 16, h: 110, t: W },
+  { x: 540, y: 400, w: 16, h: 80, t: W },
+  { x: 80, y: 140, w: 16, h: 100, t: W },
+  { x: 760, y: 150, w: 16, h: 150, t: W },
+  // chimney
+  { x: 330, y: 120, w: 16, h: 170, t: W },
+  { x: 380, y: 140, w: 16, h: 160, t: W },
+  // chimney against the right border
+  { x: 900, y: 280, w: 16, h: 180, t: W },
+];
+
+const solids = [
+  { x: 0, y: GROUND_Y, w: WORLD_W, h: WORLD_H - GROUND_Y, t: 'ground' },
+  { x: 0, y: -16, w: WORLD_W, h: 16, t: 'ceiling' },
+];
+// Border walls are split per section so each piece gets its section's tint.
+for (let i = 0; i < SECTIONS; i++) {
+  const y = i * SECTION_H, h = Math.min(SECTION_H, GROUND_Y - y);
+  solids.push({ x: 0, y, w: 16, h, t: 'border' }, { x: WORLD_W - 16, y, w: 16, h, t: 'border' });
+}
+for (const s of BASE_LAYOUT) solids.push({ ...s, y: s.y + BASE_Y });
+
+// Upper sections are generated from a fixed seed so every player gets the same map.
+(function generateUpperSections() {
+  const rnd = mulberry32(2026);
+  const ROW_GAP = 60;
+
+  let row = 0;
+  for (let y = BASE_Y + 40; y >= 48; y -= ROW_GAP, row++) {
+    const centers = row % 2 ? [240, 480, 720] : [120, 360, 600, 840];
+    const skip = row % 2 ? -1 : Math.floor(rnd() * 8);
+    centers.forEach((c, i) => {
+      if (i === skip) return;
+      const w = 64 + Math.floor(rnd() * 4) * 12;
+      let x = Math.round(c - w / 2 + (rnd() * 2 - 1) * 16);
+      x = Math.max(16, Math.min(WORLD_W - 16 - w, x));
+      solids.push({ x, y, w, h: 12, t: P });
+    });
+  }
+
+  // Keep at least a player-width of space between walls and everything else.
+  const MARGIN = 14;
+  const fits = r => r.y >= 40 && !solids.some(s =>
+    r.x - MARGIN < s.x + s.w && r.x + r.w + MARGIN > s.x &&
+    r.y - MARGIN < s.y + s.h && r.y + r.h + MARGIN > s.y);
+  const randX = () => 40 + Math.floor(rnd() * (WORLD_W - 96) / 4) * 4;
+
+  for (let k = 1; k < SECTIONS; k++) {
+    const top = WORLD_H - (k + 1) * SECTION_H;
+    let placed = 0;
+    for (let tries = 0; tries < 400 && placed < 4; tries++) {
+      const h = 90 + Math.floor(rnd() * 90);
+      const r = { x: randX(), y: top + 20 + Math.floor(rnd() * (SECTION_H - h - 40)), w: 16, h, t: W };
+      if (fits(r)) { solids.push(r); placed++; }
+    }
+    for (let tries = 0; tries < 600; tries++) {
+      const h = 110 + Math.floor(rnd() * 70);
+      const gap = 34 + Math.floor(rnd() * 12);
+      const x = randX(), y = top + 20 + Math.floor(rnd() * (SECTION_H - h - 60));
+      const a = { x, y, w: 16, h, t: W };
+      const b = { x: x + 16 + gap, y: y + 20, w: 16, h: h - 10, t: W };
+      const span = { x, y, w: 32 + gap, h: h + 10 };
+      if (b.x + 16 < WORLD_W - 30 && fits(span)) { solids.push(a, b); break; }
+    }
+  }
+})();
+
+// ---------------------------------------------------------------------------
+// Pre-rendered art
+// ---------------------------------------------------------------------------
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  return [c, g];
+}
+
+function mix(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = s => Math.round(((pa >> s) & 255) + (((pb >> s) & 255) - ((pa >> s) & 255)) * t);
+  return '#' + ((1 << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).slice(1);
+}
+
+const GRASS = [
+  { main: '#4fb53e', top: '#86e05c', dark: '#3a8f2e', tip: '#b6f08a' },
+  { main: '#4fb53e', top: '#86e05c', dark: '#3a8f2e', tip: '#b6f08a' },
+  { main: '#2c7330', top: '#46914a', dark: '#1d5222', tip: '#5fae5c' },
+  { main: '#2cc4c8', top: '#7cf0ec', dark: '#1b8c96', tip: '#c2fffa' },
+  { main: '#c8383c', top: '#f0665e', dark: '#8c2228', tip: '#ffaea2' },
+];
+const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#46aab4', '#b84c4c'];
+
+function drawDirtBlock(g, s, rnd, grass) {
+  g.fillStyle = '#6b4a2f';
+  g.fillRect(s.x, s.y, s.w, s.h);
+  for (let i = 0; i < (s.w * s.h) / 10; i++) {
+    const px = s.x + Math.floor(rnd() * s.w), py = s.y + 3 + Math.floor(rnd() * (s.h - 3));
+    g.fillStyle = rnd() < 0.5 ? '#5a3d26' : '#7d5a3a';
+    g.fillRect(px, py, 1, 1);
+  }
+  // stones
+  for (let i = 0; i < s.w / 14; i++) {
+    const px = s.x + 2 + Math.floor(rnd() * (s.w - 5)), py = s.y + 5 + Math.floor(rnd() * Math.max(1, s.h - 8));
+    g.fillStyle = '#8a7a6a'; g.fillRect(px, py, 2, 1);
+    g.fillStyle = '#5c5048'; g.fillRect(px, py + 1, 2, 1);
+  }
+  g.fillStyle = '#3b2718';
+  g.fillRect(s.x, s.y + s.h - 1, s.w, 1);
+  g.fillRect(s.x, s.y, 1, s.h);
+  g.fillRect(s.x + s.w - 1, s.y, 1, s.h);
+  // grass
+  g.fillStyle = grass.main;
+  g.fillRect(s.x, s.y, s.w, 3);
+  g.fillStyle = grass.top;
+  g.fillRect(s.x, s.y, s.w, 1);
+  g.fillStyle = grass.dark;
+  for (let x = s.x; x < s.x + s.w; x++) {
+    const d = rnd();
+    if (d < 0.35) g.fillRect(x, s.y + 3, 1, 1);
+    if (d < 0.12) g.fillRect(x, s.y + 4, 1, 1);
+  }
+  g.fillStyle = grass.tip;
+  for (let x = s.x + 1; x < s.x + s.w - 1; x++) if (rnd() < 0.08) g.fillRect(x, s.y - 1, 1, 1);
+}
+
+function drawBrickWall(g, s, rnd, tint, moss) {
+  const t = c => (tint ? mix(c, tint, 0.14) : c);
+  g.fillStyle = t('#3c4250');
+  g.fillRect(s.x, s.y, s.w, s.h);
+  const bricks = [t('#5b6475'), t('#636d80'), t('#555d6d')];
+  const highlight = t('#7a849a');
+  const bw = 8, bh = 5;
+  for (let row = 0; row * bh < s.h; row++) {
+    const off = row % 2 ? -4 : 0;
+    for (let bx = off; bx < s.w; bx += bw) {
+      const x0 = Math.max(s.x + bx, s.x), x1 = Math.min(s.x + bx + bw - 1, s.x + s.w);
+      const y0 = s.y + row * bh, y1 = Math.min(y0 + bh - 1, s.y + s.h);
+      if (x1 <= x0 || y1 <= y0) continue;
+      const v = rnd();
+      g.fillStyle = v < 0.33 ? bricks[0] : v < 0.66 ? bricks[1] : bricks[2];
+      g.fillRect(x0, y0, x1 - x0, y1 - y0);
+      g.fillStyle = highlight;
+      g.fillRect(x0, y0, x1 - x0, 1);
+      if (rnd() < 0.2) {
+        g.fillStyle = moss;
+        g.fillRect(x0 + Math.floor(rnd() * (x1 - x0)), y1 - 1, 1, 1);
+      }
+    }
+  }
+  g.fillStyle = t('#23272f');
+  g.fillRect(s.x, s.y, 1, s.h);
+  g.fillRect(s.x + s.w - 1, s.y, 1, s.h);
+  g.fillRect(s.x, s.y + s.h - 1, s.w, 1);
+  g.fillStyle = t('#9aa4ba');
+  g.fillRect(s.x, s.y, s.w, 1);
+}
+
+const [levelCanvas, lg] = makeCanvas(WORLD_W, WORLD_H);
+(function buildLevel() {
+  const rnd = mulberry32(1337);
+  for (const s of solids) {
+    if (s.t === 'ceiling') continue;
+    const sec = sectionOf(s.y + s.h / 2);
+    if (s.t === W || s.t === 'border') drawBrickWall(lg, s, rnd, WALL_TINT[sec], GRASS[sec].dark);
+    else drawDirtBlock(lg, s, rnd, GRASS[sec]);
+  }
+})();
+
+const [skyCanvas, sg] = makeCanvas(VIEW_W, VIEW_H);
+(function buildSky() {
+  const bands = ['#140b26', '#1a0f30', '#21133a', '#291744', '#321b4d', '#3d2056', '#4a255d', '#592a63'];
+  const bh = Math.ceil(VIEW_H / bands.length);
+  bands.forEach((c, i) => { sg.fillStyle = c; sg.fillRect(0, i * bh, VIEW_W, bh); });
+  const rnd = mulberry32(42);
+  for (let i = 0; i < 90; i++) {
+    sg.fillStyle = rnd() < 0.2 ? '#fff6c9' : '#b9a8e0';
+    sg.fillRect(Math.floor(rnd() * VIEW_W), Math.floor(rnd() * VIEW_H * 0.7), 1, 1);
+  }
+  // moon
+  const mx = 380, my = 50, r = 18;
+  for (let y = -r; y <= r; y++) {
+    for (let x = -r; x <= r; x++) {
+      if (x * x + y * y <= r * r) {
+        sg.fillStyle = (x + 6) * (x + 6) + (y - 4) * (y - 4) < 30 || (x - 5) * (x - 5) + (y + 7) * (y + 7) < 12 ? '#d9cfa8' : '#f3ecc8';
+        sg.fillRect(mx + x, my + y, 1, 1);
+      }
+    }
+  }
+})();
+
+function buildHills(w, h, seed, base, amp, color, top) {
+  const [c, g] = makeCanvas(w, h);
+  const rnd = mulberry32(seed);
+  let y = base;
+  for (let x = 0; x < w; x += 4) {
+    const t = x / w * Math.PI * 2;
+    y = base - Math.round((Math.sin(t * 2) * 0.5 + Math.sin(t * 5 + seed) * 0.3 + rnd() * 0.2) * amp / 4) * 4;
+    g.fillStyle = color;
+    g.fillRect(x, y, 4, h - y);
+    g.fillStyle = top;
+    g.fillRect(x, y, 4, 2);
+  }
+  return c;
+}
+const hillsFar = buildHills(960, VIEW_H, 7, 170, 60, '#2b1d4a', '#3a2860');
+const hillsNear = buildHills(960, VIEW_H, 3, 215, 40, '#1d1433', '#2a1d47');
+
+function drawBackground(g, camX, camY) {
+  g.drawImage(skyCanvas, 0, 0);
+  const layers = [[hillsFar, 0.12, 0.04], [hillsNear, 0.25, 0.08]];
+  for (const [img, fx, fy] of layers) {
+    const ox = -Math.round(camX * fx) % img.width;
+    const oy = Math.round((WORLD_H - VIEW_H - camY) * fy);
+    for (let x = ox; x < VIEW_W; x += img.width) g.drawImage(img, x, oy);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Player sprite
+// ---------------------------------------------------------------------------
+const BODY = [
+  '..oooooo..',
+  '.obbbbbbo.',
+  'obhhbbbbbo',
+  'obhbbbbbbo',
+  'obbbbwpwpo',
+  'obbbbwpwpo',
+  'obbbbbbbbo',
+  'obbbbbbbbo',
+  'odbbbbbbdo',
+  '.oddddddo.',
+];
+const LEGS = {
+  idle: ['..obo.obo.', '..obo.obo.', '..oo..oo..'],
+  run1: ['.obo..obo.', 'obo....obo', 'oo......oo'],
+  run2: ['...obobo..', '...obobo..', '...oo.oo..'],
+  jump: ['..oboobo..', '..oboobo..', '..........'],
+  fall: ['.obo..obo.', '.obo..obo.', '.oo...oo..'],
+  slide: ['..obo.obo.', '...obo.obo', '....oo.oo.'],
+};
+// Extended arm + fist, drawn at columns 10-14, rows 5-7 of the sprite.
+const FIST = [
+  '..ooo',
+  'bbobo',
+  '..ooo',
+];
+const ANIMS = ['idle', 'run', 'jump', 'fall', 'slide'];
+const PLAYER_W = 10, PLAYER_H = 13;
+
+function rgbOf(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+const isNearWhite = hex => rgbOf(hex).every(v => v > 180);
+const isNearBlack = hex => rgbOf(hex).every(v => v < 60);
+const hurtFlashColor = hex => (isNearWhite(hex) ? '#140c1c' : '#ffffff');
+
+function drawPlayer(g, x, y, color, facing, anim, t, fx = {}) {
+  let legs = LEGS.idle, bob = 0;
+  const name = ANIMS[anim] || 'idle';
+  if (name === 'run') {
+    const f = Math.floor(t * 12) % 2;
+    legs = f ? LEGS.run1 : LEGS.run2;
+    bob = f ? 0 : 1;
+  } else if (LEGS[name]) legs = LEGS[name];
+  if (name === 'idle') bob = Math.floor(t * 2) % 2;
+  const dark = isNearBlack(color);
+  const pal = {
+    o: '#140c1c', b: color, d: shade(color, -0.35), h: shade(color, dark ? 0.2 : 0.4),
+    w: '#ffffff', p: dark ? '#8c8c96' : '#140c1c',
+  };
+  x = Math.round(x); y = Math.round(y);
+  const plot = (c, yy, ch) => {
+    g.fillStyle = fx.flash && ch !== 'o' ? fx.flash : pal[ch];
+    g.fillRect(x + (facing > 0 ? c : 9 - c), yy, 1, 1);
+  };
+  const rows = BODY.concat(legs);
+  for (let r = 0; r < rows.length; r++) {
+    const yy = r < BODY.length ? y + r + bob : y + r;
+    for (let c = 0; c < 10; c++) {
+      if (rows[r][c] !== '.') plot(c, yy, rows[r][c]);
+    }
+  }
+  const plotCol = (c, yy, col) => {
+    g.fillStyle = fx.flash || col;
+    g.fillRect(x + (facing > 0 ? c : 9 - c), yy, 1, 1);
+  };
+  if (fx.armor & 1) {
+    const L = ITEMS.leather_helmet.color;
+    for (let c = 1; c <= 8; c++) {
+      plotCol(c, y + bob, shade(L, -0.35));
+      plotCol(c, y + 1 + bob, c === 2 ? shade(L, 0.3) : L);
+    }
+    plotCol(0, y + 2 + bob, shade(L, -0.35));
+    plotCol(9, y + 2 + bob, shade(L, -0.35));
+  }
+  if (fx.armor & 2) {
+    const L = ITEMS.leather_boots.color;
+    const row = legs[2].trim() ? 2 : 1;
+    for (let c = 0; c < 10; c++) if (legs[row][c] !== '.') plotCol(c, y + BODY.length + row, L);
+  }
+  const item = ITEMS[fx.item];
+  const isBow = item && item.kind === 'bow';
+  if (fx.punch && !isBow) {
+    for (let r = 0; r < FIST.length; r++) {
+      for (let c = 0; c < 5; c++) {
+        if (FIST[r][c] !== '.') plot(10 + c, y + 5 + r + bob, FIST[r][c]);
+      }
+    }
+  }
+  if (item) drawHeldItem(g, x, y + bob, facing, item, fx.punch, fx.charge);
+}
+
+function drawHeldItem(g, x, y, facing, it, attacking, charge) {
+  const px = (c, r, col) => {
+    g.fillStyle = col;
+    g.fillRect(x + (facing > 0 ? c : 9 - c), y + r, 1, 1);
+  };
+  const hilt = '#5a3a1a', guard = '#3a2414';
+  if (it.kind === 'melee') {
+    if (attacking) {
+      const end = 5 + it.range;
+      px(15, 5, guard); px(15, 6, guard); px(15, 7, guard);
+      for (let c = 16; c <= end; c++) {
+        px(c, 6, it.color);
+        if (it.style === 'sword' && c < end) px(c, 5, shade(it.color, 0.35));
+      }
+      px(end + 1, it.style === 'katana' ? 5 : 6, it.color);
+    } else {
+      const h = it.style === 'katana' ? 11 : 8;
+      for (let r = 8 - h; r < 8; r++) px(10, r, r === 8 - h ? shade(it.color, 0.4) : it.color);
+      if (it.style === 'katana') px(11, 8 - h, it.color);
+      px(9, 8, guard); px(10, 8, guard); px(11, 8, guard);
+      px(10, 9, hilt);
+    }
+  } else if (it.kind === 'bow') {
+    const arc = [[2, 11], [3, 12], [4, 13], [5, 13], [6, 13], [7, 13], [8, 13], [9, 12], [10, 11]];
+    for (const [r, c] of arc) px(c, r, it.color);
+    px(11, 2, shade(it.color, -0.4)); px(11, 10, shade(it.color, -0.4));
+    const pull = charge >= 0 ? Math.round(charge * 3) : 0;
+    for (let r = 3; r <= 9; r++) {
+      const bend = Math.round(pull * (1 - Math.abs(r - 6) / 3.5));
+      px(11 - bend, r, '#e8e8e8');
+    }
+    if (charge >= 0) {
+      const full = charge >= 1;
+      for (let c = 11 - pull; c <= 15; c++) px(c, 6, full ? '#ffd84a' : '#c89a5a');
+      px(16, 6, '#e8e8f0');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Colors
+// ---------------------------------------------------------------------------
+function hsvToHex(h, s, v) {
+  const f = n => {
+    const k = (n + h / 60) % 6;
+    return v - v * s * Math.max(0, Math.min(k, 4 - k, 1));
+  };
+  const to = c => Math.round(c * 255).toString(16).padStart(2, '0');
+  return '#' + to(f(5)) + to(f(3)) + to(f(1));
+}
+function hexToHsv(hex) {
+  const [r, g, b] = rgbOf(hex).map(v => v / 255);
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) {
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: mx ? d / mx : 0, v: mx };
+}
+const clamp01 = v => Math.max(0, Math.min(1, v));
+
+// ---------------------------------------------------------------------------
+// Profile (name + color, saved locally)
+// ---------------------------------------------------------------------------
+const PALETTE = ['#e84a5f', '#4aa8e8', '#f2c14e', '#6ad46a', '#b36ae8', '#ff8a3d', '#4ae8d0', '#ff6ad5'];
+const NAME_MAX = 10;
+const DEFAULT_NAME = 'P' + Math.floor(1000 + Math.random() * 9000);
+const sanitizeName = s => String(s || '').toUpperCase().replace(/[^A-Z0-9 .\-!?]/g, '').slice(0, NAME_MAX);
+
+function loadProfile() {
+  try {
+    return { name: localStorage.getItem('combat.name') || '', color: localStorage.getItem('combat.color') || '' };
+  } catch (e) {
+    return { name: '', color: '' };
+  }
+}
+function saveProfile() {
+  try {
+    localStorage.setItem('combat.name', nameInput.value);
+    localStorage.setItem('combat.color', me.color);
+  } catch (e) { /* storage unavailable */ }
+}
+
+// ---------------------------------------------------------------------------
+// Physics / player
+// ---------------------------------------------------------------------------
+const GRAVITY = 1000;
+const MAX_FALL = 420;
+const WALL_SLIDE = 70;
+const RUN_SPEED = 120;
+const ACCEL_GROUND = 1400;
+const ACCEL_AIR = 900;
+const FRICTION = 1600;
+const JUMP_V = 300;
+const AIR_JUMP_V = 275;
+const WALL_JUMP_X = 105;
+const WALL_JUMP_Y = 285;
+const WALL_JUMP_LOCK = 0.08;
+const COYOTE = 0.08;
+const JUMP_BUFFER = 0.12;
+const WALL_PROBE = 2;
+
+const BASE_HP = 200;
+const HP_LIMIT = 400;
+const PUNCH_DAMAGE = 5;
+const PUNCH_RANGE = 12;
+const PUNCH_TIME = 0.12;
+const SWORD_RANGE = 17;
+const KATANA_RANGE = 23;
+const BOW_CHARGE_TIME = 1;
+const ARROW_SPEED = 420;
+const ARROW_LIFE = 1.4;
+const DASH_SPEED = 340;
+const DASH_TIME = 0.16;
+const DASH_COOLDOWN = 0.8;
+const DOUBLE_TAP = 0.25;
+const PUNCH_COOLDOWN = 0.3;
+const PUNCH_BUFFER = 0.15;
+const REGEN_AMOUNT = 5;
+const REGEN_INTERVAL = 5;
+const SPAWN_IMMUNITY = 3;
+const HURT_FLASH = 0.15;
+
+function overlaps(x, y, w, h) {
+  for (const s of solids) {
+    if (x < s.x + s.w && x + w > s.x && y < s.y + s.h && y + h > s.y) return s;
+  }
+  return null;
+}
+const rectsOverlap = (ax, ay, aw, ah, bx, by, bw, bh) => ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+// Map borders are solid but can't be wall jumped, slid on, or used to refresh the air jump.
+const touchesGrabbable = (x, y) => solids.some(s => s.t !== 'border' &&
+  rectsOverlap(x, y, PLAYER_W, PLAYER_H, s.x, s.y, s.w, s.h));
+
+const profile = loadProfile();
+const me = {
+  x: 0, y: 0, vx: 0, vy: 0,
+  facing: 1, anim: 0,
+  onGround: false, wallDir: 0,
+  airJumps: 1, coyote: 0, jumpBuffer: 0, lock: 0,
+  jumpHeldPrev: false, airJumpCount: 0,
+  color: /^#[0-9a-f]{6}$/i.test(profile.color) ? profile.color : PALETTE[Math.floor(Math.random() * PALETTE.length)],
+  name: sanitizeName(profile.name).trim() || DEFAULT_NAME,
+  hp: BASE_HP, maxHp: BASE_HP, dead: false, immuneUntil: 0, flash: 0, regenAt: 0,
+  punchT: 0, punchCd: 0, punchBuffer: 0, punchCount: 0, killedBy: '', joinedAt: 0,
+  dashT: 0, dashDir: 1, dashCd: 0, charging: false, chargeT: 0,
+};
+const picker = hexToHsv(me.color);
+// Wall-clock based so it keeps counting down while the tab is in the background.
+const immuneLeft = () => Math.max(0, (me.immuneUntil - performance.now()) / 1000);
+
+function spawn(p) {
+  p.x = 400 + Math.random() * 120;
+  p.y = GROUND_Y - PLAYER_H - 1;
+  p.vx = p.vy = 0;
+  p.airJumps = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+const nameInput = document.getElementById('nameInput');
+nameInput.value = sanitizeName(profile.name);
+nameInput.addEventListener('input', () => {
+  nameInput.value = sanitizeName(nameInput.value);
+  me.name = nameInput.value.trim() || DEFAULT_NAME;
+  saveProfile();
+});
+
+const keys = new Set();
+let jumpPressedQueued = false;
+let punchQueued = false;
+let dashQueued = 0;
+const lastTap = { dir: 0, t: 0 };
+const JUMP_KEYS = ['Space', 'KeyW', 'ArrowUp', 'KeyZ', 'KeyK'];
+const PUNCH_KEYS = ['Enter', 'NumpadEnter', 'KeyS'];
+
+addEventListener('keydown', e => {
+  if (document.activeElement === nameInput) {
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+      e.preventDefault();
+      startGame();
+    }
+    return;
+  }
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.code)) e.preventDefault();
+  if (state === 'menu') {
+    if (!e.repeat && (e.code === 'Enter' || e.code === 'Space')) startGame();
+    return;
+  }
+  if (e.code === 'KeyE' && !e.repeat && state === 'game' && !me.dead) {
+    inventoryOpen = !inventoryOpen;
+    if (inventoryOpen) pickerOpen = false;
+  }
+  if (e.code === 'Escape') inventoryOpen = pickerOpen = false;
+  if (!e.repeat && !keys.has(e.code)) {
+    if (JUMP_KEYS.includes(e.code)) jumpPressedQueued = true;
+    if (PUNCH_KEYS.includes(e.code)) punchQueued = 'key';
+    if (e.code === 'KeyQ') dashQueued = moveDir() || me.facing;
+    const tapDir = ['ArrowLeft', 'KeyA'].includes(e.code) ? -1 : ['ArrowRight', 'KeyD'].includes(e.code) ? 1 : 0;
+    if (tapDir) {
+      const now = performance.now();
+      if (lastTap.dir === tapDir && now - lastTap.t < DOUBLE_TAP * 1000) {
+        dashQueued = tapDir;
+        lastTap.t = 0;
+      } else {
+        lastTap.dir = tapDir;
+        lastTap.t = now;
+      }
+    }
+  }
+  keys.add(e.code);
+});
+addEventListener('keyup', e => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+const mouse = { x: -1, y: -1 };
+function toCanvas(e) {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left) / r.width * VIEW_W;
+  mouse.y = (e.clientY - r.top) / r.height * VIEW_H;
+}
+const over = b => mouse.x >= b.x && mouse.x < b.x + b.w && mouse.y >= b.y && mouse.y < b.y + b.h;
+
+// UI layout
+const NAME_BOX = { x: VIEW_W / 2 - 66, y: 108, w: 132, h: 18 };
+const PLAY_BTN = { x: VIEW_W / 2 - 50, y: 140, w: 100, h: 30 };
+const RESPAWN_BTN = { x: VIEW_W / 2 - 110, y: 140, w: 100, h: 30 };
+const LEAVE_BTN = { x: VIEW_W / 2 + 10, y: 140, w: 100, h: 30 };
+const COLOR_BTN = { x: VIEW_W / 2 - 32, y: 4, w: 64, h: 14 };
+const PICKER = { x: VIEW_W / 2 - 64, y: 21, w: 128, h: 76 };
+const SV_RECT = { x: PICKER.x + 4, y: PICKER.y + 4, w: 100, h: 68 };
+const HUE_RECT = { x: PICKER.x + 110, y: PICKER.y + 4, w: 14, h: 68 };
+const INV_COLS = 10, INV_SLOT = 16, INV_GAP = 2;
+const INV_PANEL = { x: VIEW_W / 2 - 117, y: 33, w: 234, h: 204 };
+const invSlotRect = i => ({
+  x: INV_PANEL.x + 6 + (i % INV_COLS) * (INV_SLOT + INV_GAP),
+  y: INV_PANEL.y + 20 + Math.floor(i / INV_COLS) * (INV_SLOT + INV_GAP),
+  w: INV_SLOT, h: INV_SLOT,
+});
+const EQUIP_SLOTS = ['hand', 'head', 'feet'];
+const equipSlotRect = i => ({ x: INV_PANEL.x + 196, y: INV_PANEL.y + 30 + i * 40, w: 22, h: 22 });
+let pickerOpen = false;
+let dragTarget = null;
+
+function applyPick() {
+  if (dragTarget === 'sv') {
+    picker.s = clamp01((mouse.x - SV_RECT.x) / SV_RECT.w);
+    picker.v = 1 - clamp01((mouse.y - SV_RECT.y) / SV_RECT.h);
+  } else if (dragTarget === 'hue') {
+    picker.h = clamp01((mouse.y - HUE_RECT.y) / HUE_RECT.h) * 359.9;
+  }
+  me.color = hsvToHex(picker.h, picker.s, picker.v);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  toCanvas(e);
+  if (state === 'leaving') return;
+  if (state === 'menu') {
+    if (over(NAME_BOX)) {
+      e.preventDefault();
+      nameInput.focus();
+    } else {
+      nameInput.blur();
+      if (over(PLAY_BTN)) startGame();
+    }
+    return;
+  }
+  if (me.dead) {
+    if (over(RESPAWN_BTN)) respawn();
+    else if (over(LEAVE_BTN)) leaveGame();
+    return;
+  }
+  if (over(COLOR_BTN)) {
+    pickerOpen = !pickerOpen;
+    if (pickerOpen) inventoryOpen = false;
+    return;
+  }
+  if (inventoryOpen && over(INV_PANEL)) {
+    if (e.button !== 0) return;
+    for (let i = 0; i < inventory.length; i++) {
+      if (over(invSlotRect(i))) { toggleEquip(inventory[i]); return; }
+    }
+    EQUIP_SLOTS.forEach((slot, i) => {
+      if (over(equipSlotRect(i)) && equipped[slot]) toggleEquip(equipped[slot]);
+    });
+    return;
+  }
+  if (e.button === 1) {
+    e.preventDefault();
+    dashQueued = moveDir() || me.facing;
+    return;
+  }
+  if (e.button === 2) {
+    if (heldItem().kind === 'bow') {
+      me.charging = true;
+      me.chargeT = 0;
+    }
+    return;
+  }
+  if (pickerOpen) {
+    if (over(SV_RECT)) dragTarget = 'sv';
+    else if (over(HUE_RECT)) dragTarget = 'hue';
+    else if (!over(PICKER)) pickerOpen = false;
+    if (dragTarget) {
+      canvas.setPointerCapture(e.pointerId);
+      applyPick();
+    }
+    return;
+  }
+  if (e.button === 0) punchQueued = 'mouse';
+});
+canvas.addEventListener('pointermove', e => {
+  toCanvas(e);
+  if (dragTarget) applyPick();
+});
+addEventListener('pointerup', e => {
+  if (dragTarget) {
+    dragTarget = null;
+    saveProfile();
+  }
+  if (e.button === 2 && me.charging) {
+    toCanvas(e);
+    releaseCharge();
+  }
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('auxclick', e => e.preventDefault());
+
+const held = codes => codes.some(c => keys.has(c));
+const moveDir = () => (held(['ArrowRight', 'KeyD']) ? 1 : 0) - (held(['ArrowLeft', 'KeyA']) ? 1 : 0);
+
+// ---------------------------------------------------------------------------
+// Movement
+// ---------------------------------------------------------------------------
+function stepPlayer(p, dt) {
+  const left = held(['ArrowLeft', 'KeyA']);
+  const right = held(['ArrowRight', 'KeyD']);
+  const jumpHeld = held(JUMP_KEYS);
+  const dir = (right ? 1 : 0) - (left ? 1 : 0);
+
+  p.onGround = !!overlaps(p.x, p.y + 1, PLAYER_W, PLAYER_H) && p.vy >= 0;
+  const wallL = !p.onGround && touchesGrabbable(p.x - WALL_PROBE, p.y);
+  const wallR = !p.onGround && touchesGrabbable(p.x + WALL_PROBE, p.y);
+  p.wallDir = wallL ? -1 : wallR ? 1 : 0;
+
+  if (p.onGround) {
+    p.coyote = COYOTE;
+    p.airJumps = 1;
+  } else {
+    p.coyote -= dt;
+  }
+  // Touching a wall refreshes the air jump.
+  if (p.wallDir) p.airJumps = 1;
+
+  // Horizontal movement
+  if (p.lock > 0) p.lock -= dt;
+  let accel = p.onGround ? ACCEL_GROUND : ACCEL_AIR;
+  if (p.lock > 0) accel *= 0.15;
+  if (dir !== 0) {
+    const target = dir * RUN_SPEED;
+    p.vx += Math.sign(target - p.vx) * Math.min(Math.abs(target - p.vx), accel * dt);
+    if (p.lock <= 0) p.facing = dir;
+  } else {
+    const f = (p.onGround ? FRICTION : ACCEL_AIR * 0.5) * (p.lock > 0 ? 0.15 : 1);
+    p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), f * dt);
+  }
+
+  // Gravity & wall slide
+  p.vy += GRAVITY * dt;
+  const sliding = p.wallDir !== 0 && p.vy > 0 && dir === p.wallDir;
+  if (sliding) {
+    p.vy = Math.min(p.vy, WALL_SLIDE);
+    if (Math.random() < 0.3) {
+      emit(p.x + (p.wallDir > 0 ? PLAYER_W : 0), p.y + PLAYER_H - 3, 1, '#d8d0e8', 20, 0.3);
+    }
+  }
+  p.vy = Math.min(p.vy, MAX_FALL);
+
+  if (p.dashT > 0) {
+    p.dashT -= dt;
+    p.vx = p.dashDir * DASH_SPEED;
+    p.vy = 0;
+    p.facing = p.dashDir;
+    if (Math.random() < 0.6) emit(p.x + PLAYER_W / 2, p.y + 2 + Math.random() * (PLAYER_H - 4), 1, Math.random() < 0.5 ? p.color : '#ffffff', 15, 0.25);
+    if (p.dashT <= 0) p.vx = p.dashDir * RUN_SPEED;
+  }
+
+  // Jumping
+  if (jumpPressedQueued) { p.jumpBuffer = JUMP_BUFFER; jumpPressedQueued = false; }
+  else p.jumpBuffer -= dt;
+
+  if (p.jumpBuffer > 0) {
+    if (p.onGround || p.coyote > 0 || p.wallDir !== 0 || p.airJumps > 0) p.dashT = 0;
+    if (p.onGround || p.coyote > 0) {
+      p.vy = -JUMP_V;
+      p.coyote = 0;
+      p.jumpBuffer = 0;
+      emit(p.x + PLAYER_W / 2, p.y + PLAYER_H, 6, '#e8dcc8', 50, 0.35);
+    } else if (p.wallDir !== 0) {
+      p.vx = -p.wallDir * WALL_JUMP_X;
+      p.vy = -WALL_JUMP_Y;
+      p.facing = -p.wallDir;
+      p.lock = WALL_JUMP_LOCK;
+      p.jumpBuffer = 0;
+      p.airJumps = 1;
+      emit(p.x + (p.wallDir > 0 ? PLAYER_W : 0), p.y + PLAYER_H / 2, 8, '#ffffff', 70, 0.35);
+    } else if (p.airJumps > 0) {
+      p.airJumps = 0;
+      p.vy = -AIR_JUMP_V;
+      p.jumpBuffer = 0;
+      p.airJumpCount++;
+      airRing(p.x + PLAYER_W / 2, p.y + PLAYER_H, p.color);
+    }
+  }
+
+  // Variable jump height
+  if (!jumpHeld && p.jumpHeldPrev && p.vy < 0) p.vy *= 0.5;
+  p.jumpHeldPrev = jumpHeld;
+
+  // Move X
+  p.x += p.vx * dt;
+  let s = overlaps(p.x, p.y, PLAYER_W, PLAYER_H);
+  if (s) {
+    p.x = p.vx > 0 ? s.x - PLAYER_W : s.x + s.w;
+    p.vx = 0;
+  }
+  // Move Y
+  const wasAir = !p.onGround;
+  const fallSpeed = p.vy;
+  p.y += p.vy * dt;
+  s = overlaps(p.x, p.y, PLAYER_W, PLAYER_H);
+  if (s) {
+    if (p.vy > 0) {
+      p.y = s.y - PLAYER_H;
+      if (wasAir && fallSpeed > 200) emit(p.x + PLAYER_W / 2, p.y + PLAYER_H, 5, '#e8dcc8', 40, 0.3);
+    } else {
+      p.y = s.y + s.h;
+    }
+    p.vy = 0;
+  }
+
+  if (p.y > WORLD_H + 50) spawn(p);
+
+  // Animation
+  if (p.onGround) p.anim = Math.abs(p.vx) > 10 ? 1 : 0;
+  else if (sliding) { p.anim = 4; p.facing = -p.wallDir; }
+  else p.anim = p.vy < 0 ? 2 : 3;
+}
+
+// ---------------------------------------------------------------------------
+// Particles & damage numbers
+// ---------------------------------------------------------------------------
+const particles = [];
+function emit(x, y, n, color, speed, life) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = speed * (0.4 + Math.random() * 0.6);
+    particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.6 - 10, life, max: life, color, g: 60 });
+  }
+}
+function airRing(x, y, color) {
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    particles.push({ x, y, vx: Math.cos(a) * 70, vy: Math.sin(a) * 25 + 20, life: 0.35, max: 0.35, color: i % 2 ? '#ffffff' : color, g: 0 });
+  }
+}
+function deathBurst(x, y, color) {
+  emit(x + PLAYER_W / 2, y + PLAYER_H / 2, 24, color, 110, 0.8);
+  emit(x + PLAYER_W / 2, y + PLAYER_H / 2, 10, '#ffffff', 80, 0.5);
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.vy += p.g * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+  }
+}
+function drawParticles(g, cx, cy) {
+  for (const p of particles) {
+    g.globalAlpha = Math.max(0, p.life / p.max);
+    g.fillStyle = p.color;
+    g.fillRect(Math.round(p.x - cx), Math.round(p.y - cy), 1, 1);
+  }
+  g.globalAlpha = 1;
+}
+
+const damageNumbers = [];
+function addDamageNumber(x, y, amount) {
+  damageNumbers.push({ x: x + PLAYER_W / 2 + Math.round(Math.random() * 8 - 4), y: y - 16, text: '-' + amount, life: 0.8 });
+  emit(x + PLAYER_W / 2, y + PLAYER_H / 2, 6, '#ffffff', 60, 0.25);
+}
+function updateDamageNumbers(dt) {
+  for (let i = damageNumbers.length - 1; i >= 0; i--) {
+    const d = damageNumbers[i];
+    d.life -= dt;
+    d.y -= 22 * dt;
+    if (d.life <= 0) damageNumbers.splice(i, 1);
+  }
+}
+function drawDamageNumbers(cx, cy) {
+  for (const d of damageNumbers) {
+    ctx.globalAlpha = Math.min(1, d.life / 0.3);
+    drawText(ctx, d.text, d.x - cx, d.y - cy, 1, '#ff4a4a', 'center', '#140c1c');
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Networking (serverless WebRTC via public signaling relays)
+// ---------------------------------------------------------------------------
+const APP_ID = 'combat-pixel-lobby-2026';
+const ROOM_ID = 'main-lobby';
+const remotes = new Map();
+let netStatus = 'OFFLINE';
+let room = null;
+let sendState = null, sendHit = null, sendDamage = null;
+let sendChests = null, sendChestHit = null, sendChestBreak = null, sendArrow = null;
+let myPeerId = 'local';
+
+function packState() {
+  return {
+    x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10,
+    vx: Math.round(me.vx), vy: Math.round(me.vy),
+    f: me.facing, a: me.anim, j: me.airJumpCount, p: me.punchCount,
+    hp: me.hp, mh: me.maxHp, d: me.dead ? 1 : 0, i: immuneLeft() > 0 ? 1 : 0,
+    c: me.color, n: me.name, t: me.joinedAt,
+    w: equipped.hand ? equipped.hand.key : '', ar: (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0),
+    ch: me.charging ? Math.round(Math.min(1, me.chargeT / BOW_CHARGE_TIME) * 10) : -1,
+  };
+}
+function broadcastState() {
+  if (sendState && state === 'game') {
+    try { sendState(packState()); } catch (e) { /* peer dropped mid-send */ }
+  }
+}
+
+const clampHp = v => Math.max(0, Math.min(HP_LIMIT, Number(v) || 0));
+
+function onRemote(id, d) {
+  if (!d || typeof d !== 'object' || !Number.isFinite(d.x) || !Number.isFinite(d.y)) return;
+  let r = remotes.get(id);
+  const color = /^#[0-9a-fA-F]{6}$/.test(d.c) ? d.c : '#cccccc';
+  const dead = !!d.d;
+  if (!r) {
+    r = { x: d.x, y: d.y, tx: d.x, ty: d.y, vx: 0, vy: 0, j: d.j | 0, p: d.p | 0, dead, flash: 0, punchT: 0 };
+    remotes.set(id, r);
+  }
+  if ((d.j | 0) > r.j) airRing(d.x + PLAYER_W / 2, d.y + PLAYER_H, color);
+  if ((d.p | 0) > r.p) r.punchT = PUNCH_TIME;
+  if (dead && !r.dead) deathBurst(r.x, r.y, r.c || color);
+  if (!dead && r.dead) { r.x = d.x; r.y = d.y; }
+  r.j = d.j | 0;
+  r.p = d.p | 0;
+  r.dead = dead;
+  r.immune = !!d.i;
+  r.maxHp = Math.max(1, clampHp(d.mh ?? BASE_HP));
+  r.hp = Math.min(r.maxHp, clampHp(d.hp ?? r.maxHp));
+  r.w = typeof d.w === 'string' && ITEMS[d.w] ? d.w : '';
+  r.ar = d.ar | 0;
+  r.ch = Number.isFinite(d.ch) ? d.ch : -1;
+  r.tx = d.x; r.ty = d.y;
+  r.vx = Number(d.vx) || 0; r.vy = Number(d.vy) || 0;
+  r.f = d.f < 0 ? -1 : 1;
+  r.a = d.a | 0;
+  r.c = color;
+  r.n = sanitizeName(d.n) || '???';
+  r.joinedAt = Number.isFinite(d.t) ? d.t : 0;
+  r.last = performance.now();
+}
+
+// The victim is authoritative over its own HP: attackers only request a hit.
+// Works out how much a hit request is worth and whether the attacker at
+// (ax, ay) could plausibly have landed it on a target at (tx, ty).
+function validateHit(d, ax, ay, tx, ty, slackX) {
+  const it = attackItem(d && d.w);
+  if (!it) return null;
+  if (it.kind === 'bow') {
+    if (Math.hypot(ax - tx, ay - ty) > ARROW_SPEED * ARROW_LIFE + 80) return null;
+    return { damage: d.ch ? it.charged : it.damage, gap: it.cooldown * 700 };
+  }
+  if (Math.abs(ax - tx) > it.range + slackX || Math.abs(ay - ty) > 32) return null;
+  return { damage: it.damage, gap: PUNCH_COOLDOWN * 700 };
+}
+
+function onHit(id, d) {
+  if (state !== 'game' || me.dead || immuneLeft() > 0) return;
+  const r = remotes.get(id);
+  if (!r || r.dead) return;
+  const hit = validateHit(d, r.tx, r.ty, me.x, me.y, 28);
+  if (!hit) return;
+  const now = performance.now();
+  const key = d.w === 'punch' || !ITEMS[d.w] || ITEMS[d.w].kind !== 'bow' ? 'lastHitAt' : 'lastArrowAt';
+  if (now - (r[key] || 0) < hit.gap) return;
+  r[key] = now;
+
+  me.hp = Math.max(0, me.hp - hit.damage);
+  me.flash = HURT_FLASH;
+  addDamageNumber(me.x, me.y, hit.damage);
+  if (sendDamage) {
+    try { sendDamage({ a: hit.damage, hp: me.hp }); } catch (e) { /* ignore */ }
+  }
+  if (me.hp <= 0) die(r.n);
+}
+
+function onDamage(id, d) {
+  const r = remotes.get(id);
+  if (!r || !d) return;
+  const amount = Math.max(1, Math.min(HP_LIMIT, d.a | 0));
+  r.hp = clampHp(d.hp);
+  r.flash = HURT_FLASH;
+  addDamageNumber(r.x, r.y, amount);
+}
+
+async function startNet() {
+  netStatus = 'CONNECTING';
+  try {
+    const { joinRoom, selfId } = await import('https://esm.run/trystero@0.25.4');
+    if (state !== 'game') return;
+    myPeerId = selfId;
+    room = joinRoom({ appId: APP_ID }, ROOM_ID);
+    const stateAction = room.makeAction('state');
+    const hitAction = room.makeAction('hit');
+    const damageAction = room.makeAction('dmg');
+    const chestsAction = room.makeAction('chests');
+    const chestHitAction = room.makeAction('chestHit');
+    const chestBreakAction = room.makeAction('chestBreak');
+    const arrowAction = room.makeAction('arrow');
+    sendArrow = d => arrowAction.send(d);
+    arrowAction.onMessage = (d, ctx) => onRemoteArrow(ctx.peerId, d);
+    sendState = d => stateAction.send(d);
+    sendHit = (d, target) => hitAction.send(d, { target });
+    sendDamage = d => damageAction.send(d);
+    sendChests = d => chestsAction.send(d);
+    sendChestHit = (d, target) => chestHitAction.send(d, { target });
+    sendChestBreak = d => chestBreakAction.send(d);
+    stateAction.onMessage = (d, ctx) => onRemote(ctx.peerId, d);
+    hitAction.onMessage = (d, ctx) => onHit(ctx.peerId, d);
+    damageAction.onMessage = (d, ctx) => onDamage(ctx.peerId, d);
+    chestsAction.onMessage = (d, ctx) => onChests(ctx.peerId, d);
+    chestHitAction.onMessage = (d, ctx) => onChestHit(ctx.peerId, d);
+    chestBreakAction.onMessage = (d, ctx) => onChestBreak(d, ctx.peerId);
+    room.onPeerJoin = () => {
+      broadcastState();
+      if (isChestHost() && chestsKnown) broadcastChests();
+    };
+    room.onPeerLeave = id => remotes.delete(id);
+    netStatus = 'ONLINE';
+    broadcastState();
+  } catch (err) {
+    console.error('Multiplayer unavailable:', err);
+    netStatus = 'OFFLINE';
+  }
+}
+
+addEventListener('pagehide', () => room && room.leave());
+
+// Runs on a timer rather than per frame so regen keeps going in background tabs.
+function tickRegen() {
+  if (state !== 'game' || me.dead) return;
+  const now = performance.now();
+  if (me.hp >= me.maxHp) {
+    me.regenAt = now + REGEN_INTERVAL * 1000;
+    return;
+  }
+  while (now >= me.regenAt && me.hp < me.maxHp) {
+    me.hp = Math.min(me.maxHp, me.hp + REGEN_AMOUNT);
+    me.regenAt += REGEN_INTERVAL * 1000;
+  }
+}
+
+setInterval(() => {
+  tickRegen();
+  tickChests();
+  broadcastState();
+}, 66);
+
+function updateRemotes(dt) {
+  const now = performance.now();
+  for (const [id, r] of remotes) {
+    if (now - r.last > 10000) { remotes.delete(id); continue; }
+    r.flash = Math.max(0, r.flash - dt);
+    r.punchT = Math.max(0, r.punchT - dt);
+    if (r.ch >= 0 && now - r.last > 500) r.ch = -1;
+    const ahead = Math.min(0.15, (now - r.last) / 1000);
+    const px = r.tx + r.vx * ahead, py = r.ty + r.vy * ahead;
+    if (Math.abs(px - r.x) > 120 || Math.abs(py - r.y) > 120) { r.x = px; r.y = py; }
+    const k = Math.min(1, dt * 18);
+    r.x += (px - r.x) * k;
+    r.y += (py - r.y) * k;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Combat
+// ---------------------------------------------------------------------------
+function hitChest(c, msg) {
+  const host = chestHostId();
+  if (host === myPeerId) applyChestHit(c.id, myPeerId, msg);
+  else if (sendChestHit) {
+    try { sendChestHit({ id: c.id, ...msg }, host); } catch (e) { /* host gone */ }
+  }
+}
+
+function doMelee() {
+  const it = heldItem();
+  const msg = { w: equipped.hand ? equipped.hand.key : 'punch' };
+  me.punchCd = PUNCH_COOLDOWN;
+  me.punchT = PUNCH_TIME;
+  me.punchCount++;
+  const reach = PLAYER_W / 2 + it.range;
+  const hx = me.facing > 0 ? me.x + PLAYER_W / 2 : me.x + PLAYER_W / 2 - reach;
+  for (const [id, r] of remotes) {
+    if (r.dead) continue;
+    if (rectsOverlap(hx, me.y, reach, PLAYER_H, r.x, r.y, PLAYER_W, PLAYER_H) && sendHit) {
+      try { sendHit(msg, id); } catch (e) { /* peer gone */ }
+    }
+  }
+  for (const c of [...chests]) {
+    if (rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, CHEST_W, CHEST_H)) hitChest(c, msg);
+  }
+  broadcastState();
+}
+
+// Arrows are simulated by the shooter, who reports hits; everyone else only
+// draws a copy of them.
+const arrows = [];
+
+function fireArrow(charged, aimAtMouse) {
+  const it = heldItem();
+  const sx = me.x + PLAYER_W / 2, sy = me.y + 6;
+  let dx = me.facing, dy = 0;
+  if (aimAtMouse) {
+    dx = mouse.x + Math.round(cam.x) - sx;
+    dy = mouse.y + Math.round(cam.y) - sy;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) { dx = me.facing; dy = 0; } else { dx /= len; dy /= len; }
+    if (Math.abs(dx) > 0.05) me.facing = dx > 0 ? 1 : -1;
+  }
+  me.punchCd = it.cooldown;
+  me.punchT = PUNCH_TIME;
+  me.punchCount++;
+  const a = {
+    x: sx, y: sy, vx: dx * ARROW_SPEED, vy: dy * ARROW_SPEED, life: ARROW_LIFE,
+    mine: true, owner: myPeerId, w: equipped.hand.key, ch: charged ? 1 : 0,
+  };
+  arrows.push(a);
+  if (charged) emit(sx, sy, 10, '#ffd84a', 60, 0.3);
+  if (sendArrow) {
+    try {
+      sendArrow({ x: Math.round(sx), y: Math.round(sy), vx: Math.round(a.vx), vy: Math.round(a.vy), w: a.w, ch: a.ch });
+    } catch (e) { /* ignore */ }
+  }
+  broadcastState();
+}
+
+function onRemoteArrow(id, d) {
+  if (!d || ![d.x, d.y, d.vx, d.vy].every(Number.isFinite) || !ITEMS[d.w]) return;
+  if (Math.hypot(d.vx, d.vy) > ARROW_SPEED * 1.5 || arrows.length > 200) return;
+  arrows.push({ x: d.x, y: d.y, vx: d.vx, vy: d.vy, life: ARROW_LIFE, mine: false, owner: id, w: d.w, ch: d.ch ? 1 : 0 });
+}
+
+function arrowHitsPlayer(a, x, y) {
+  return a.x >= x - 1 && a.x < x + PLAYER_W + 1 && a.y >= y - 1 && a.y < y + PLAYER_H + 1;
+}
+
+function updateArrows(dt) {
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const a = arrows[i];
+    a.life -= dt;
+    let gone = a.life <= 0;
+    const steps = Math.max(1, Math.ceil(Math.hypot(a.vx, a.vy) * dt / 3));
+    for (let s = 0; s < steps && !gone; s++) {
+      a.x += a.vx * dt / steps;
+      a.y += a.vy * dt / steps;
+      if (a.x < 0 || a.x > WORLD_W || a.y < -20 || a.y > WORLD_H || overlaps(a.x, a.y, 1, 1)) {
+        emit(a.x, a.y, 4, '#c8b89a', 30, 0.25);
+        gone = true;
+        break;
+      }
+      for (const [id, r] of remotes) {
+        if (r.dead || id === a.owner || !arrowHitsPlayer(a, r.x, r.y)) continue;
+        if (a.mine && sendHit) {
+          try { sendHit({ w: a.w, ch: a.ch }, id); } catch (e) { /* peer gone */ }
+        }
+        gone = true;
+        break;
+      }
+      if (!gone && !a.mine && !me.dead && state === 'game' && arrowHitsPlayer(a, me.x, me.y)) gone = true;
+      if (!gone && a.mine) {
+        const c = chests.find(o => a.x >= o.x && a.x < o.x + CHEST_W && a.y >= o.y && a.y < o.y + CHEST_H);
+        if (c) {
+          hitChest(c, { w: a.w, ch: a.ch });
+          gone = true;
+        }
+      }
+    }
+    if (gone) arrows.splice(i, 1);
+    else if (a.ch && Math.random() < 0.5) emit(a.x, a.y, 1, '#ffd84a', 10, 0.2);
+  }
+}
+
+function drawArrows(cx, cy) {
+  for (const a of arrows) {
+    const sp = Math.hypot(a.vx, a.vy) || 1;
+    const ux = a.vx / sp, uy = a.vy / sp;
+    const shaft = a.ch ? '#ffd84a' : a.w === 'gold_bow' ? '#f2c14e' : '#c89a5a';
+    for (let t = 0; t <= 7; t++) {
+      ctx.fillStyle = t === 0 ? '#e8e8f0' : t >= 6 ? '#ffffff' : shaft;
+      ctx.fillRect(Math.round(a.x - ux * t - cx), Math.round(a.y - uy * t - cy), 1, 1);
+    }
+  }
+}
+
+function tryDash(dir) {
+  if (!hasDash() || me.dashCd > 0 || me.dead) return;
+  me.dashT = DASH_TIME;
+  me.dashDir = dir < 0 ? -1 : 1;
+  me.dashCd = DASH_COOLDOWN;
+  me.lock = 0;
+  emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 8, '#ffffff', 60, 0.3);
+}
+
+function releaseCharge() {
+  const charged = me.chargeT >= BOW_CHARGE_TIME;
+  me.charging = false;
+  me.chargeT = 0;
+  if (state !== 'game' || me.dead || heldItem().kind !== 'bow' || me.punchCd > 0) return;
+  fireArrow(charged, true);
+}
+
+// ---------------------------------------------------------------------------
+// Inventory & items
+// ---------------------------------------------------------------------------
+const INVENTORY_SIZE = 100;
+const inventory = [];
+let inventoryOpen = false;
+
+const FIST_ITEM = { name: 'FIST', kind: 'melee', damage: PUNCH_DAMAGE, range: PUNCH_RANGE };
+// Drop chances are "1 in N" each; they are used as relative weights.
+const ITEMS = {
+  wood_sword: { name: 'WOODEN SWORD', kind: 'melee', style: 'sword', damage: 7, range: SWORD_RANGE, color: '#b8834a', odds: 2 },
+  leather_helmet: { name: 'LEATHER HELMET', kind: 'helmet', hp: 10, color: '#9a6232', odds: 4 },
+  leather_boots: { name: 'LEATHER BOOTS', kind: 'boots', hp: 10, color: '#8a5428', odds: 5 },
+  stone_sword: { name: 'STONE SWORD', kind: 'melee', style: 'sword', damage: 9, range: SWORD_RANGE, color: '#9a9aa6', odds: 7 },
+  wood_katana: { name: 'WOODEN KATANA', kind: 'melee', style: 'katana', damage: 7, range: KATANA_RANGE, color: '#c8945a', odds: 10 },
+  bow: { name: 'BOW', kind: 'bow', damage: 8, charged: 20, cooldown: 0.5, color: '#a8723e', odds: 15 },
+  iron_sword: { name: 'IRON SWORD', kind: 'melee', style: 'sword', damage: 12, range: SWORD_RANGE, color: '#dfe4ee', odds: 20 },
+  stone_katana: { name: 'STONE KATANA', kind: 'melee', style: 'katana', damage: 9, range: KATANA_RANGE, color: '#a4a4b0', odds: 23 },
+  dash: { name: 'DASH POWER', kind: 'power', color: '#4ae8d0', odds: 25 },
+  gold_bow: { name: 'GOLD BOW', kind: 'bow', damage: 11, charged: 28, cooldown: 0.5, color: '#f2c14e', odds: 30 },
+};
+const DROP_TOTAL = Object.values(ITEMS).reduce((a, it) => a + 1 / it.odds, 0);
+function rollChestItem() {
+  let pick = Math.random() * DROP_TOTAL;
+  for (const [key, it] of Object.entries(ITEMS)) {
+    pick -= 1 / it.odds;
+    if (pick <= 0) return key;
+  }
+  return 'wood_sword';
+}
+
+const equipped = { hand: null, head: null, feet: null };
+const slotFor = it => (it.kind === 'melee' || it.kind === 'bow' ? 'hand' : it.kind === 'helmet' ? 'head' : it.kind === 'boots' ? 'feet' : null);
+const heldItem = () => (equipped.hand ? ITEMS[equipped.hand.key] : FIST_ITEM);
+const attackItem = w => {
+  if (w === 'punch' || w === undefined) return FIST_ITEM;
+  const it = ITEMS[w];
+  return it && (it.kind === 'melee' || it.kind === 'bow') ? it : null;
+};
+const hasDash = () => inventory.some(i => i.key === 'dash');
+
+// Armor raises max HP and current HP by the same amount, so swapping it can't heal.
+function updateMaxHp() {
+  const old = me.maxHp;
+  me.maxHp = BASE_HP + (equipped.head ? ITEMS[equipped.head.key].hp : 0) + (equipped.feet ? ITEMS[equipped.feet.key].hp : 0);
+  me.hp = Math.max(1, Math.min(me.maxHp, me.hp + me.maxHp - old));
+}
+
+function toggleEquip(item) {
+  const it = ITEMS[item.key];
+  const slot = slotFor(it);
+  if (!slot) {
+    if (it.kind === 'power') showToast('DASH: Q / MIDDLE CLICK / DOUBLE TAP');
+    return;
+  }
+  equipped[slot] = equipped[slot] === item ? null : item;
+  if (slot === 'hand') me.charging = false;
+  updateMaxHp();
+  broadcastState();
+}
+
+let toast = null;
+function showToast(text) {
+  toast = { text, life: 2.5 };
+}
+
+function grantChestReward() {
+  if (inventory.length >= INVENTORY_SIZE) {
+    showToast('INVENTORY FULL');
+    return;
+  }
+  const key = rollChestItem();
+  const it = ITEMS[key];
+  const item = { key };
+  inventory.push(item);
+  const slot = slotFor(it);
+  if (slot && !equipped[slot]) toggleEquip(item);
+  showToast(key === 'dash' ? 'GOT DASH POWER! Q / MIDDLE CLICK / DOUBLE TAP' : 'GOT ' + it.name + '!');
+}
+
+// ---------------------------------------------------------------------------
+// Chests
+// ---------------------------------------------------------------------------
+// One peer (whoever has been in the lobby longest) owns chest state and
+// broadcasts it; everyone else sends hit requests to that peer.
+const CHEST_COUNT = 5; // per map section
+const CHEST_HP = 50;
+const CHEST_W = 14, CHEST_H = 11;
+const CHEST_SPRITE = [
+  '.oooooooooooo.',
+  'ohhhhhhhhhhhho',
+  'owwwwwwwwwwwwo',
+  'oddddddddddddo',
+  'ommmmmyymmmmmo',
+  'owwwwwyywwwwwo',
+  'owwwwwwwwwwwwo',
+  'owwwwwwwwwwwwo',
+  'oddddddddddddo',
+  'ommmmmmmmmmmmo',
+  '.oooooooooooo.',
+];
+const CHEST_PAL = { o: '#2a1608', h: '#d29a5a', w: '#a8672f', d: '#7a4520', m: '#6a6a78', y: '#f2c14e' };
+const CHEST_SURFACES = solids.filter(s => (s.t === P || s.t === 'ground') && s.w >= CHEST_W + 8);
+const chestSection = c => sectionOf(c.y + CHEST_H);
+
+let chests = [];
+let chestsKnown = false;
+let chestsDirty = false;
+let lastChestBroadcast = 0;
+let joinedPerf = 0;
+
+function chestHostId() {
+  let best = myPeerId, bestT = me.joinedAt;
+  for (const [id, r] of remotes) {
+    if (!r.joinedAt) continue;
+    if (r.joinedAt < bestT || (r.joinedAt === bestT && id < best)) {
+      best = id;
+      bestT = r.joinedAt;
+    }
+  }
+  return best;
+}
+const isChestHost = () => chestHostId() === myPeerId;
+
+function randomChestSpot(section) {
+  const surfaces = CHEST_SURFACES.filter(s => sectionOf(s.y) === section);
+  if (!surfaces.length) return null;
+  const weight = s => Math.min(s.w, 200);
+  const total = surfaces.reduce((a, s) => a + weight(s), 0);
+  for (let tries = 0; tries < 30; tries++) {
+    let pick = Math.random() * total, surf = surfaces[0];
+    for (const s of surfaces) {
+      pick -= weight(s);
+      if (pick <= 0) { surf = s; break; }
+    }
+    const x = Math.round(surf.x + 2 + Math.random() * (surf.w - CHEST_W - 4));
+    const y = surf.y - CHEST_H;
+    if (overlaps(x, y, CHEST_W, CHEST_H)) continue;
+    if (chests.some(c => Math.abs(c.x - x) < 30 && Math.abs(c.y - y) < 20)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+function broadcastChests() {
+  lastChestBroadcast = performance.now();
+  chestsDirty = false;
+  if (!sendChests) return;
+  try { sendChests({ l: chests.map(c => [c.id, c.x, c.y, c.hp]) }); } catch (e) { /* ignore */ }
+}
+
+function tickChests() {
+  if (state !== 'game' || !isChestHost()) return;
+  const now = performance.now();
+  if (!chestsKnown) {
+    // Give an existing host time to tell us about its chests before making our own.
+    if (netStatus !== 'OFFLINE' && now - joinedPerf < 2500) return;
+    chestsKnown = true;
+  }
+  let added = false;
+  for (let sec = 0; sec < SECTIONS; sec++) {
+    let have = chests.filter(c => chestSection(c) === sec).length;
+    while (have < CHEST_COUNT) {
+      const spot = randomChestSpot(sec);
+      if (!spot) break;
+      chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, hp: CHEST_HP, flash: 0 });
+      have++;
+      added = true;
+    }
+  }
+  if (added || chestsDirty || now - lastChestBroadcast > 1000) broadcastChests();
+}
+
+function chestHitFx(c, amount) {
+  c.flash = HURT_FLASH;
+  addDamageNumber(c.x + CHEST_W / 2 - PLAYER_W / 2, c.y + 4, amount);
+}
+
+function applyChestHit(chestId, attackerId, d) {
+  const c = chests.find(o => o.id === chestId);
+  if (!c) return;
+  let damage;
+  if (attackerId !== myPeerId) {
+    const r = remotes.get(attackerId);
+    if (!r || r.dead) return;
+    const hit = validateHit(d, r.tx, r.ty, c.x, c.y, 32);
+    if (!hit) return;
+    const key = attackItem(d.w).kind === 'bow' ? 'lastChestArrowAt' : 'lastChestHitAt';
+    const now = performance.now();
+    if (now - (r[key] || 0) < hit.gap) return;
+    r[key] = now;
+    damage = hit.damage;
+  } else {
+    const it = attackItem(d && d.w) || FIST_ITEM;
+    damage = it.kind === 'bow' && d.ch ? it.charged : it.damage;
+  }
+  c.hp = Math.max(0, c.hp - damage);
+  chestHitFx(c, damage);
+  if (c.hp <= 0) {
+    const msg = { id: c.id, by: attackerId, x: c.x, y: c.y };
+    onChestBreak(msg, myPeerId);
+    if (sendChestBreak) {
+      try { sendChestBreak(msg); } catch (e) { /* ignore */ }
+    }
+  }
+  chestsDirty = true;
+  tickChests();
+}
+
+function onChestHit(id, d) {
+  if (!isChestHost() || !d || typeof d.id !== 'string') return;
+  applyChestHit(d.id, id, d);
+}
+
+function onChests(id, d) {
+  if (id !== chestHostId() || !d || !Array.isArray(d.l) || d.l.length > CHEST_COUNT * SECTIONS + 10) return;
+  const old = new Map(chests.map(c => [c.id, c]));
+  chests = [];
+  for (const e of d.l) {
+    if (!Array.isArray(e) || typeof e[0] !== 'string' || !Number.isFinite(e[1]) || !Number.isFinite(e[2])) continue;
+    const prev = old.get(e[0]);
+    const c = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp: Math.max(0, Math.min(CHEST_HP, Number(e[3]) || 0)), flash: prev ? prev.flash : 0 };
+    if (prev && c.hp < prev.hp) chestHitFx(c, prev.hp - c.hp);
+    chests.push(c);
+  }
+  chestsKnown = true;
+}
+
+function onChestBreak(d, fromId) {
+  if (!d || typeof d.id !== 'string' || fromId !== chestHostId()) return;
+  const c = chests.find(o => o.id === d.id);
+  const x = c ? c.x : Number(d.x) || 0, y = c ? c.y : Number(d.y) || 0;
+  chests = chests.filter(o => o.id !== d.id);
+  emit(x + CHEST_W / 2, y + CHEST_H / 2, 18, '#a8672f', 90, 0.6);
+  emit(x + CHEST_W / 2, y + CHEST_H / 2, 8, '#f2c14e', 70, 0.5);
+  if (d.by === myPeerId && state === 'game') grantChestReward();
+}
+
+function updateChests(dt) {
+  for (const c of chests) c.flash = Math.max(0, c.flash - dt);
+  if (toast) {
+    toast.life -= dt;
+    if (toast.life <= 0) toast = null;
+  }
+}
+
+function die(killer) {
+  me.dead = true;
+  me.killedBy = killer || '';
+  pickerOpen = false;
+  inventoryOpen = false;
+  dragTarget = null;
+  deathBurst(me.x, me.y, me.color);
+  broadcastState();
+}
+
+function resetLife() {
+  me.hp = me.maxHp;
+  me.dashT = me.dashCd = 0;
+  me.charging = false;
+  dashQueued = 0;
+  me.dead = false;
+  me.immuneUntil = performance.now() + SPAWN_IMMUNITY * 1000;
+  me.flash = 0;
+  me.regenAt = performance.now() + REGEN_INTERVAL * 1000;
+  me.punchT = me.punchCd = me.punchBuffer = 0;
+  me.lock = me.jumpBuffer = 0;
+  jumpPressedQueued = punchQueued = false;
+  spawn(me);
+  cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, me.x - VIEW_W / 2));
+  cam.y = Math.max(0, Math.min(WORLD_H - VIEW_H, me.y - VIEW_H / 2));
+}
+
+function respawn() {
+  resetLife();
+  broadcastState();
+}
+
+// Reloading gives a fresh peer ID; rejoining the room with the same ID can be
+// ignored by peers that still hold the old connection.
+function leaveGame() {
+  const leaving = room ? Promise.resolve(room.leave()).catch(() => {}) : Promise.resolve();
+  room = null;
+  sendState = sendHit = sendDamage = null;
+  sendChests = sendChestHit = sendChestBreak = sendArrow = null;
+  state = 'leaving';
+  Promise.race([leaving, new Promise(r => setTimeout(r, 800))]).then(() => location.reload());
+}
+
+function updateMe(dt) {
+  me.flash = Math.max(0, me.flash - dt);
+  me.punchT = Math.max(0, me.punchT - dt);
+  me.punchCd = Math.max(0, me.punchCd - dt);
+  me.dashCd = Math.max(0, me.dashCd - dt);
+  if (dashQueued) {
+    tryDash(dashQueued);
+    dashQueued = 0;
+  }
+  if (me.charging) {
+    if (heldItem().kind === 'bow') me.chargeT += dt;
+    else me.charging = false;
+  }
+  if (punchQueued) {
+    me.attackSource = punchQueued;
+    punchQueued = false;
+    me.punchBuffer = PUNCH_BUFFER;
+  }
+  if (me.punchBuffer > 0) {
+    if (me.punchCd <= 0) {
+      me.punchBuffer = 0;
+      if (heldItem().kind === 'bow') {
+        if (!me.charging) fireArrow(false, me.attackSource === 'mouse');
+      } else {
+        doMelee();
+      }
+    } else {
+      me.punchBuffer -= dt;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Game state
+// ---------------------------------------------------------------------------
+let state = 'menu';
+const cam = { x: 0, y: WORLD_H - VIEW_H };
+let time = 0;
+
+function startGame() {
+  if (state !== 'menu') return;
+  nameInput.blur();
+  me.name = nameInput.value.trim() || DEFAULT_NAME;
+  saveProfile();
+  state = 'game';
+  me.joinedAt = Date.now();
+  joinedPerf = performance.now();
+  keys.clear();
+  resetLife();
+  startNet();
+}
+
+function updateCamera(dt) {
+  const tx = me.x + PLAYER_W / 2 - VIEW_W / 2 + me.facing * 24;
+  const ty = me.y + PLAYER_H / 2 - VIEW_H / 2 - 10;
+  const k = Math.min(1, dt * 6);
+  cam.x += (tx - cam.x) * k;
+  cam.y += (ty - cam.y) * k;
+  cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, cam.x));
+  cam.y = Math.max(0, Math.min(WORLD_H - VIEW_H, cam.y));
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+const BUTTON_THEMES = {
+  green: { base: '#4fb53e', hover: '#6ad46a', top: '#86e05c', topHover: '#a6f08a', side: '#256d22', text: '#1d5a1a' },
+  red: { base: '#c8404a', hover: '#e0565f', top: '#ee7a7f', topHover: '#ff9da0', side: '#7a1f2b', text: '#4a1018' },
+};
+function drawButton(b, label, theme) {
+  const t = BUTTON_THEMES[theme];
+  const hover = over(b);
+  const press = hover ? 1 : 0;
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(b.x - 1, b.y - 1, b.w + 2, b.h + 4);
+  ctx.fillStyle = t.side;
+  ctx.fillRect(b.x, b.y + 3, b.w, b.h);
+  ctx.fillStyle = hover ? t.hover : t.base;
+  ctx.fillRect(b.x, b.y + press, b.w, b.h);
+  ctx.fillStyle = hover ? t.topHover : t.top;
+  ctx.fillRect(b.x, b.y + press, b.w, 2);
+  drawText(ctx, label, b.x + b.w / 2, b.y + press + 10, 2, '#ffffff', 'center', t.text);
+  return hover;
+}
+
+function drawMenu() {
+  const cx = (Math.sin(time * 0.1) * 0.5 + 0.5) * (WORLD_W - VIEW_W);
+  const cy = WORLD_H - VIEW_H;
+  drawBackground(ctx, cx, cy);
+  ctx.drawImage(levelCanvas, Math.round(cx), cy, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H);
+  ctx.fillStyle = 'rgba(11, 7, 20, 0.55)';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+  // Title
+  const s = 7, ty = 40 + Math.round(Math.sin(time * 2) * 2);
+  for (let i = 4; i >= 1; i--) drawText(ctx, 'COMBAT', VIEW_W / 2 + i, ty + i, s, i === 1 ? '#7a1f2b' : '#3a0d18', 'center');
+  drawText(ctx, 'COMBAT', VIEW_W / 2, ty, s, '#ff5a4f', 'center');
+  ctx.fillStyle = '#ffb09a';
+  ctx.fillRect(VIEW_W / 2 - textWidth('COMBAT', s) / 2, ty, textWidth('COMBAT', s), 1);
+
+  // Name chooser
+  const focused = document.activeElement === nameInput;
+  const nb = NAME_BOX;
+  drawText(ctx, 'YOUR NAME', VIEW_W / 2, nb.y - 9, 1, '#b9a8e0', 'center');
+  ctx.fillStyle = focused ? '#ffe66d' : over(nb) ? '#8a7aaf' : '#5a4a7a';
+  ctx.fillRect(nb.x - 1, nb.y - 1, nb.w + 2, nb.h + 2);
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(nb.x, nb.y, nb.w, nb.h);
+  const val = nameInput.value;
+  if (val) drawText(ctx, val, VIEW_W / 2, nb.y + 4, 2, '#ffffff', 'center');
+  else if (!focused) drawText(ctx, 'CLICK TO TYPE', VIEW_W / 2, nb.y + 7, 1, '#5a4a7a', 'center');
+  if (focused && Math.floor(time * 2) % 2 === 0) {
+    const cxr = VIEW_W / 2 + Math.ceil(textWidth(val, 2) / 2) + (val ? 2 : 0);
+    ctx.fillStyle = '#ffe66d';
+    ctx.fillRect(cxr, nb.y + 4, 2, 10);
+  }
+
+  const hover = drawButton(PLAY_BTN, 'PLAY', 'green');
+
+  drawText(ctx, 'ONLINE MULTIPLAYER LOBBY', VIEW_W / 2, 200, 1, '#b9a8e0', 'center');
+  drawText(ctx, 'MOVE: A/D OR ARROWS   JUMP: SPACE/W', VIEW_W / 2, 213, 1, '#8a7aaf', 'center');
+  drawText(ctx, 'ATTACK: ENTER / S / CLICK   INVENTORY: E', VIEW_W / 2, 226, 1, '#8a7aaf', 'center');
+  drawText(ctx, 'BOW: CLICK TO AIM, HOLD RIGHT CLICK TO CHARGE', VIEW_W / 2, 239, 1, '#8a7aaf', 'center');
+  canvas.style.cursor = hover || over(nb) ? 'pointer' : 'default';
+}
+
+function hpColor(frac) {
+  return frac > 0.5 ? '#6ad46a' : frac > 0.25 ? '#f2c14e' : '#e84a5f';
+}
+
+function drawNameAndHp(name, x, y, col, hp, maxHp) {
+  x = Math.round(x); y = Math.round(y);
+  const frac = Math.max(0, Math.min(1, hp / maxHp));
+  drawText(ctx, name, x + PLAYER_W / 2, y - 12, 1, col, 'center', '#140c1c');
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(x - 2, y - 5, PLAYER_W + 4, 3);
+  ctx.fillStyle = hpColor(frac);
+  ctx.fillRect(x - 1, y - 4, Math.round((PLAYER_W + 2) * frac), 1);
+}
+
+function drawChargeBar(x, y, charge) {
+  if (charge < 0) return;
+  x = Math.round(x); y = Math.round(y);
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(x - 2, y + PLAYER_H + 2, PLAYER_W + 4, 3);
+  ctx.fillStyle = charge >= 1 ? (Math.floor(time * 12) % 2 ? '#ffd84a' : '#ffffff') : '#e8e8e8';
+  ctx.fillRect(x - 1, y + PLAYER_H + 3, Math.round((PLAYER_W + 2) * Math.min(1, charge)), 1);
+}
+
+function playerFx(color, flash, immune, punchT, item, armor, charge) {
+  let f = null;
+  if (flash > 0) f = hurtFlashColor(color);
+  else if (immune && Math.floor(time * 10) % 2 === 0) f = '#4aa8ff';
+  return { flash: f, punch: punchT > 0, item, armor, charge };
+}
+
+const ICONS = {
+  sword: [
+    '.........ooo', '........obbo', '.......obbo.', '......obbo..', '.....obbo...', '..o.obbo....',
+    '..oobbo.....', '...ogo......', '..ohgoo.....', '.oho.oo.....', 'oho.........', 'oo..........',
+  ],
+  katana: [
+    '..........ob', '.........obo', '........obo.', '.......obo..', '......obo...', '.....obo....',
+    '....obo.....', '..oogo......', '...ho.......', '..ho........', '.ho.........', 'oo..........',
+  ],
+  bow: [
+    '....oo......', '...obbo.....', '..ob..os....', '..ob...s....', '.ob....s....', '.ob....s....',
+    '.ob....s....', '.ob....s....', '..ob...s....', '..ob..os....', '...obbo.....', '....oo......',
+  ],
+  helmet: [
+    '............', '............', '...oooooo...', '..obbbbbbo..', '.obbhbbbbbo.', '.obhbbbbbbo.',
+    '.obbbbbbbbo.', '.obbbbbbbbo.', '.obboooobbo.', '.obo....obo.', '.oo......oo.', '............',
+  ],
+  boots: [
+    '............', '..oooo......', '..obbo......', '..obho......', '..obbo......', '..obbo......',
+    '..obboooo...', '..obbbbbbo..', '..obbbbbbo..', '..oooooooo..', '............', '............',
+  ],
+  power: [
+    '.......ooo..', '......obbo..', '.....obbo...', '....obbo....', '...obbbooo..', '..obbbbbbo..',
+    '..ooobbbo...', '....obbo....', '...obbo.....', '..obbo......', '..obo.......', '..oo........',
+  ],
+};
+function drawItemIcon(it, x, y) {
+  const map = ICONS[it.style || it.kind];
+  const pal = { o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8' };
+  for (let r = 0; r < 12; r++) {
+    for (let c = 0; c < 12; c++) {
+      const ch = map[r][c];
+      if (ch === '.') continue;
+      ctx.fillStyle = pal[ch];
+      ctx.fillRect(x + c, y + r, 1, 1);
+    }
+  }
+}
+function itemDescription(it) {
+  if (it.kind === 'melee') return it.damage + ' DMG';
+  if (it.kind === 'bow') return it.damage + ' DMG / ' + it.charged + ' CHARGED';
+  if (it.hp) return '+' + it.hp + ' MAX HP';
+  if (it.kind === 'power') return 'Q / MIDDLE CLICK / DOUBLE TAP';
+  return '';
+}
+
+function drawPicker() {
+  const p = PICKER;
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(p.x - 1, p.y - 1, p.w + 2, p.h + 2);
+  ctx.fillStyle = '#241a33';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+
+  const sv = SV_RECT;
+  ctx.fillStyle = hsvToHex(picker.h, 1, 1);
+  ctx.fillRect(sv.x, sv.y, sv.w, sv.h);
+  let gr = ctx.createLinearGradient(sv.x, 0, sv.x + sv.w, 0);
+  gr.addColorStop(0, '#ffffff');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gr;
+  ctx.fillRect(sv.x, sv.y, sv.w, sv.h);
+  gr = ctx.createLinearGradient(0, sv.y, 0, sv.y + sv.h);
+  gr.addColorStop(0, 'rgba(0,0,0,0)');
+  gr.addColorStop(1, '#000000');
+  ctx.fillStyle = gr;
+  ctx.fillRect(sv.x, sv.y, sv.w, sv.h);
+
+  const hr = HUE_RECT;
+  gr = ctx.createLinearGradient(0, hr.y, 0, hr.y + hr.h);
+  for (let i = 0; i <= 6; i++) gr.addColorStop(i / 6, hsvToHex((i * 60) % 360, 1, 1));
+  ctx.fillStyle = gr;
+  ctx.fillRect(hr.x, hr.y, hr.w, hr.h);
+
+  const mx = Math.round(sv.x + picker.s * (sv.w - 1));
+  const my = Math.round(sv.y + (1 - picker.v) * (sv.h - 1));
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(mx - 2, my - 2, 5, 5);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(mx - 1, my - 1, 3, 3);
+  ctx.fillStyle = me.color;
+  ctx.fillRect(mx, my, 1, 1);
+
+  const hy = Math.round(hr.y + picker.h / 360 * (hr.h - 1));
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(hr.x - 2, hy - 1, hr.w + 4, 3);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(hr.x - 1, hy, hr.w + 2, 1);
+}
+
+function drawHud() {
+  // Status panel
+  ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
+  ctx.fillRect(4, 4, 112, 46);
+  drawText(ctx, 'LOBBY', 8, 8, 1, '#ffe66d');
+  drawText(ctx, 'PLAYERS: ' + (remotes.size + 1), 8, 16, 1, '#ffffff');
+  const statusCol = netStatus === 'ONLINE' ? '#6ad46a' : netStatus === 'CONNECTING' ? '#f2c14e' : '#e84a5f';
+  drawText(ctx, netStatus, 8, 24, 1, statusCol);
+  drawText(ctx, 'HP ' + me.hp + '/' + me.maxHp, 8, 33, 1, '#ffffff');
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(8, 41, 104, 6);
+  ctx.fillStyle = hpColor(me.hp / me.maxHp);
+  ctx.fillRect(9, 42, Math.round(102 * me.hp / me.maxHp), 4);
+
+  // Color button
+  const cb = COLOR_BTN;
+  const cHover = over(cb);
+  ctx.fillStyle = pickerOpen || cHover ? 'rgba(58, 40, 90, 0.9)' : 'rgba(20, 12, 28, 0.7)';
+  ctx.fillRect(cb.x, cb.y, cb.w, cb.h);
+  drawText(ctx, 'COLOR', cb.x + 5, cb.y + 5, 1, '#ffffff');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(cb.x + cb.w - 15, cb.y + 2, 11, 10);
+  ctx.fillStyle = me.color;
+  ctx.fillRect(cb.x + cb.w - 14, cb.y + 3, 9, 8);
+  if (pickerOpen) drawPicker();
+
+  // Air jump indicator
+  ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
+  ctx.fillRect(VIEW_W - 76, 4, 72, 14);
+  drawText(ctx, 'AIR JUMP', VIEW_W - 70, 8, 1, '#ffffff');
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(VIEW_W - 16, 6, 9, 9);
+  ctx.fillStyle = me.airJumps > 0 ? me.color : '#3a2f4a';
+  ctx.fillRect(VIEW_W - 15, 7, 7, 7);
+
+  // Held weapon + dash
+  const it = heldItem();
+  const label = it.name;
+  const hw = Math.max(72, textWidth(label, 1) + 22);
+  ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
+  ctx.fillRect(VIEW_W - 4 - hw, 20, hw, 16);
+  if (it !== FIST_ITEM) drawItemIcon(it, VIEW_W - 4 - hw + 2, 22);
+  drawText(ctx, label, VIEW_W - 8, 26, 1, '#ffffff', 'right');
+  if (hasDash()) {
+    ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
+    ctx.fillRect(VIEW_W - 76, 38, 72, 14);
+    drawText(ctx, 'DASH', VIEW_W - 70, 42, 1, '#ffffff');
+    ctx.fillStyle = '#140c1c';
+    ctx.fillRect(VIEW_W - 40, 42, 33, 5);
+    ctx.fillStyle = me.dashCd > 0 ? '#3a8a80' : ITEMS.dash.color;
+    ctx.fillRect(VIEW_W - 39, 43, Math.round(31 * (1 - me.dashCd / DASH_COOLDOWN)), 3);
+  }
+
+  const immune = immuneLeft();
+  if (immune > 0 && !me.dead) {
+    drawText(ctx, 'SPAWN IMMUNITY ' + Math.ceil(immune), VIEW_W / 2, VIEW_H - 14, 1, '#4aa8ff', 'center', '#140c1c');
+  }
+
+  canvas.style.cursor = cHover || (pickerOpen && over(PICKER)) ? 'pointer' : 'default';
+}
+
+// Arrows are rasterized per pixel at the target angle; rotating a tiny sprite
+// with nearest-neighbor sampling garbles diagonal directions.
+const ARROW_R = 10;
+// Head from x=1 to the tip at x=8, shaft from x=-6 to x=1.
+function insideArrow(px, py, cos, sin) {
+  const lx = px * cos + py * sin, ly = Math.abs(-px * sin + py * cos);
+  return (lx >= 1 && lx <= 8 && ly <= (8 - lx) * 6 / 7) || (lx >= -6 && lx < 1 && ly <= 2);
+}
+function drawArrow(ax, ay, angle, color) {
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  for (let py = -ARROW_R; py <= ARROW_R; py++) {
+    for (let px = -ARROW_R; px <= ARROW_R; px++) {
+      if (!insideArrow(px, py, cos, sin)) continue;
+      const edge = !insideArrow(px - 1, py, cos, sin) || !insideArrow(px + 1, py, cos, sin) ||
+                   !insideArrow(px, py - 1, cos, sin) || !insideArrow(px, py + 1, cos, sin);
+      ctx.fillStyle = edge ? '#140c1c' : color;
+      ctx.fillRect(ax + px, ay + py, 1, 1);
+    }
+  }
+}
+
+// Edge-of-screen arrows pointing at players who are out of view.
+function drawPlayerArrows(cx, cy) {
+  const EDGE = 11;
+  const hw = VIEW_W / 2, hh = VIEW_H / 2;
+  for (const r of remotes.values()) {
+    if (r.dead) continue;
+    const sx = r.x - cx, sy = r.y - cy;
+    if (sx + PLAYER_W > 0 && sx < VIEW_W && sy + PLAYER_H > 0 && sy < VIEW_H) continue;
+    const dx = sx + PLAYER_W / 2 - hw, dy = sy + PLAYER_H / 2 - hh;
+    const t = Math.min((hw - EDGE) / Math.abs(dx || 1e-6), (hh - EDGE) / Math.abs(dy || 1e-6));
+    drawArrow(Math.round(hw + dx * t), Math.round(hh + dy * t), Math.atan2(dy, dx), r.c);
+  }
+}
+
+function drawDeathScreen() {
+  ctx.fillStyle = 'rgba(40, 0, 12, 0.65)';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  drawText(ctx, 'YOU DIED', VIEW_W / 2 + 2, 62, 5, '#3a0d18', 'center');
+  drawText(ctx, 'YOU DIED', VIEW_W / 2, 60, 5, '#ff4a4a', 'center');
+  if (me.killedBy) drawText(ctx, 'KILLED BY ' + me.killedBy, VIEW_W / 2, 100, 1, '#ffffff', 'center', '#140c1c');
+  const h1 = drawButton(RESPAWN_BTN, 'RESPAWN', 'green');
+  const h2 = drawButton(LEAVE_BTN, 'LEAVE', 'red');
+  canvas.style.cursor = h1 || h2 ? 'pointer' : 'default';
+}
+
+function drawChests(cx, cy) {
+  for (const c of chests) {
+    const sx = Math.round(c.x - cx), sy = Math.round(c.y - cy);
+    if (sx < -CHEST_W || sx > VIEW_W || sy < -CHEST_H - 6 || sy > VIEW_H) continue;
+    for (let r = 0; r < CHEST_H; r++) {
+      for (let col = 0; col < CHEST_W; col++) {
+        const ch = CHEST_SPRITE[r][col];
+        if (ch === '.') continue;
+        ctx.fillStyle = c.flash > 0 && ch !== 'o' ? '#ffffff' : CHEST_PAL[ch];
+        ctx.fillRect(sx + col, sy + r, 1, 1);
+      }
+    }
+    if (c.hp < CHEST_HP) {
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(sx - 1, sy - 5, CHEST_W + 2, 3);
+      ctx.fillStyle = hpColor(c.hp / CHEST_HP);
+      ctx.fillRect(sx, sy - 4, Math.round(CHEST_W * c.hp / CHEST_HP), 1);
+    }
+  }
+}
+
+function drawInventory() {
+  const p = INV_PANEL;
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(p.x - 1, p.y - 1, p.w + 2, p.h + 2);
+  ctx.fillStyle = '#241a33';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  drawText(ctx, 'INVENTORY', p.x + 6, p.y + 7, 1, '#ffe66d');
+  drawText(ctx, inventory.length + '/' + INVENTORY_SIZE, p.x + p.w - 6, p.y + 7, 1, '#ffffff', 'right');
+  let hovered = null;
+  for (let i = 0; i < INVENTORY_SIZE; i++) {
+    const s = invSlotRect(i);
+    const isOver = over(s);
+    ctx.fillStyle = isOver ? '#5a4a7a' : '#3a2f4a';
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    ctx.fillStyle = '#1a1226';
+    ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+    const item = inventory[i];
+    if (item) {
+      const isEquipped = EQUIP_SLOTS.some(slot => equipped[slot] === item);
+      if (isEquipped) {
+        ctx.fillStyle = '#ffe66d';
+        ctx.fillRect(s.x, s.y, s.w, s.h);
+        ctx.fillStyle = '#3a2f1a';
+        ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+      }
+      drawItemIcon(ITEMS[item.key], s.x + 2, s.y + 2);
+      if (isOver) hovered = item;
+    }
+  }
+  // Equipment column
+  EQUIP_SLOTS.forEach((slot, i) => {
+    const s = equipSlotRect(i);
+    drawText(ctx, slot.toUpperCase(), s.x + s.w / 2, s.y - 8, 1, '#b9a8e0', 'center');
+    ctx.fillStyle = over(s) && equipped[slot] ? '#ffe66d' : '#5a4a7a';
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    ctx.fillStyle = '#1a1226';
+    ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+    if (equipped[slot]) {
+      drawItemIcon(ITEMS[equipped[slot].key], s.x + 5, s.y + 5);
+      if (over(s)) hovered = equipped[slot];
+    }
+  });
+  drawText(ctx, 'CLICK ITEM: EQUIP / UNEQUIP   E: CLOSE', VIEW_W / 2, p.y + p.h + 4, 1, '#8a7aaf', 'center', '#140c1c');
+  if (hovered) {
+    const it = ITEMS[hovered.key];
+    const desc = itemDescription(it);
+    const w = Math.max(textWidth(it.name, 1), textWidth(desc, 1)) + 6;
+    const tx = Math.max(2, Math.min(VIEW_W - w - 2, mouse.x + 6)), ty = mouse.y - 20;
+    ctx.fillStyle = '#140c1c';
+    ctx.fillRect(tx, ty, w, 19);
+    drawText(ctx, it.name, tx + 3, ty + 3, 1, it.color);
+    drawText(ctx, desc, tx + 3, ty + 11, 1, '#ffffff');
+  }
+}
+
+function drawToast() {
+  if (!toast) return;
+  ctx.globalAlpha = Math.min(1, toast.life / 0.4);
+  const w = textWidth(toast.text, 1) + 10;
+  ctx.fillStyle = 'rgba(20, 12, 28, 0.8)';
+  ctx.fillRect(Math.round(VIEW_W / 2 - w / 2), VIEW_H - 34, w, 13);
+  drawText(ctx, toast.text, VIEW_W / 2, VIEW_H - 30, 1, '#ffe66d', 'center');
+  ctx.globalAlpha = 1;
+}
+
+function drawGame() {
+  const cx = Math.round(cam.x), cy = Math.round(cam.y);
+  drawBackground(ctx, cx, cy);
+  ctx.drawImage(levelCanvas, cx, cy, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H);
+  drawChests(cx, cy);
+
+  for (const r of remotes.values()) {
+    if (r.dead) continue;
+    const rch = r.ch >= 0 ? r.ch / 10 : -1;
+    drawPlayer(ctx, r.x - cx, r.y - cy, r.c, r.f, r.a, time, playerFx(r.c, r.flash, r.immune, r.punchT, r.w, r.ar, rch));
+    drawNameAndHp(r.n, r.x - cx, r.y - cy, '#ffffff', r.hp, r.maxHp || BASE_HP);
+    drawChargeBar(r.x - cx, r.y - cy, rch);
+  }
+  if (!me.dead) {
+    const mch = me.charging ? me.chargeT / BOW_CHARGE_TIME : -1;
+    const fx = playerFx(me.color, me.flash, immuneLeft() > 0, me.punchT,
+      equipped.hand ? equipped.hand.key : '', (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0), mch);
+    drawPlayer(ctx, me.x - cx, me.y - cy, me.color, me.facing, me.anim, time, fx);
+    drawNameAndHp(me.name, me.x - cx, me.y - cy, '#ffe66d', me.hp, me.maxHp);
+    drawChargeBar(me.x - cx, me.y - cy, mch);
+  }
+  drawArrows(cx, cy);
+  drawParticles(ctx, cx, cy);
+  drawDamageNumbers(cx, cy);
+
+  if (me.dead) {
+    drawDeathScreen();
+  } else {
+    drawHud();
+    drawPlayerArrows(cx, cy);
+    if (inventoryOpen) drawInventory();
+    drawToast();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+const STEP = 1 / 120;
+let acc = 0, lastT = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastT) / 1000);
+  lastT = now;
+  time += dt;
+
+  if (state === 'game') {
+    if (!me.dead) {
+      acc += dt;
+      while (acc >= STEP) {
+        stepPlayer(me, STEP);
+        acc -= STEP;
+      }
+      updateMe(dt);
+    } else {
+      acc = 0;
+      jumpPressedQueued = punchQueued = false;
+      dashQueued = 0;
+    }
+    updateRemotes(dt);
+    updateArrows(dt);
+    updateChests(dt);
+    updateParticles(dt);
+    updateDamageNumbers(dt);
+    updateCamera(dt);
+    drawGame();
+  } else {
+    updateParticles(dt);
+    drawMenu();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
