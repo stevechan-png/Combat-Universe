@@ -26,7 +26,7 @@
 </head>
 <body>
 <canvas id="game" width="480" height="270"></canvas>
-<input id="nameInput" type="text" maxlength="10" autocomplete="off" spellcheck="false" aria-label="Player name" style="position:fixed;left:-9999px;top:0;opacity:0">
+<input id="nameInput" type="text" maxlength="15" autocomplete="off" spellcheck="false" aria-label="Player name" style="position:fixed;left:-9999px;top:0;opacity:0">
 <script type="module">
 // ---------------------------------------------------------------------------
 // Setup
@@ -576,7 +576,7 @@ const clamp01 = v => Math.max(0, Math.min(1, v));
 // Profile (name + color, saved locally)
 // ---------------------------------------------------------------------------
 const PALETTE = ['#e84a5f', '#4aa8e8', '#f2c14e', '#6ad46a', '#b36ae8', '#ff8a3d', '#4ae8d0', '#ff6ad5'];
-const NAME_MAX = 10;
+const NAME_MAX = 15;
 const DEFAULT_NAME = 'P' + Math.floor(1000 + Math.random() * 9000);
 const sanitizeName = s => String(s || '').toUpperCase().replace(/[^A-Z0-9 .\-!?]/g, '').slice(0, NAME_MAX);
 
@@ -736,7 +736,7 @@ function toCanvas(e) {
 const over = b => mouse.x >= b.x && mouse.x < b.x + b.w && mouse.y >= b.y && mouse.y < b.y + b.h;
 
 // UI layout
-const NAME_BOX = { x: VIEW_W / 2 - 66, y: 108, w: 132, h: 18 };
+const NAME_BOX = { x: VIEW_W / 2 - 98, y: 108, w: 196, h: 18 };
 const PLAY_BTN = { x: VIEW_W / 2 - 50, y: 140, w: 100, h: 30 };
 const RESPAWN_BTN = { x: VIEW_W / 2 - 110, y: 140, w: 100, h: 30 };
 const LEAVE_BTN = { x: VIEW_W / 2 + 10, y: 140, w: 100, h: 30 };
