@@ -110,6 +110,7 @@ const FONT = {
   ':': ['.....', '..#..', '.....', '..#..', '.....'],
   '-': ['.....', '.....', '#####', '.....', '.....'],
   '+': ['.....', '..#..', '.###.', '..#..', '.....'],
+  '*': ['#.#.#', '.###.', '#####', '.###.', '#.#.#'],
   '/': ['....#', '...#.', '..#..', '.#...', '#....'],
   '!': ['..#..', '..#..', '..#..', '.....', '..#..'],
   '?': ['####.', '....#', '..##.', '.....', '..#..'],
@@ -152,8 +153,11 @@ const SECTION_H = 540, SECTIONS = 5;
 const WORLD_W = 960, WORLD_H = SECTION_H * SECTIONS;
 const GROUND_Y = WORLD_H - 32;
 const BASE_Y = WORLD_H - SECTION_H;
-// Section 0 is the bottom of the map, SECTIONS - 1 the top.
-const sectionOf = y => Math.max(0, Math.min(SECTIONS - 1, Math.floor((WORLD_H - y) / SECTION_H)));
+// The purple biome adds two more sections above the top (at negative y) once it opens.
+const BIOME_SECTION = SECTIONS, TOTAL_SECTIONS = SECTIONS + 2;
+const BIOME_TOP = -2 * SECTION_H;
+// Section 0 is the bottom of the map, TOTAL_SECTIONS - 1 the top of the biome.
+const sectionOf = y => Math.max(0, Math.min(TOTAL_SECTIONS - 1, Math.floor((WORLD_H - y) / SECTION_H)));
 
 const P = 'plat', W = 'wall';
 
@@ -260,6 +264,48 @@ for (const s of BASE_LAYOUT) solids.push({ ...s, y: s.y + BASE_Y });
   }
 })();
 
+// Purple biome geometry. It only joins `solids` when the biome opens.
+let biomeOpen = false;
+const worldTop = () => (biomeOpen ? BIOME_TOP : 0);
+const biomeSolids = [];
+const bushes = [];
+const hitsAny = (r, list, m) => list.some(s =>
+  r.x - m < s.x + s.w && r.x + r.w + m > s.x && r.y - m < s.y + s.h && r.y + r.h + m > s.y);
+(function generateBiome() {
+  const rnd = mulberry32(777);
+  // Continues the 60px row rhythm from the top row of the red area (y = 100).
+  let row = 0;
+  for (let y = 40; y >= BIOME_TOP + 48; y -= 60, row++) {
+    const centers = row % 2 ? [240, 480, 720] : [120, 360, 600, 840];
+    const skip = row % 2 ? -1 : Math.floor(rnd() * 8);
+    centers.forEach((c, i) => {
+      if (i === skip) return;
+      const w = 64 + Math.floor(rnd() * 4) * 12;
+      let x = Math.round(c - w / 2 + (rnd() * 2 - 1) * 16);
+      x = Math.max(16, Math.min(WORLD_W - 16 - w, x));
+      const r = { x, y, w, h: 12, t: P };
+      if (y > 0 && hitsAny(r, solids, 14)) return;
+      biomeSolids.push(r);
+    });
+  }
+  for (let k = 0; k < 2; k++) {
+    const top = BIOME_TOP + k * SECTION_H;
+    let placed = 0;
+    for (let tries = 0; tries < 400 && placed < 3; tries++) {
+      const h = 90 + Math.floor(rnd() * 90);
+      const r = { x: 40 + Math.floor(rnd() * (WORLD_W - 96) / 4) * 4, y: top + 20 + Math.floor(rnd() * (SECTION_H - h - 40)), w: 16, h, t: W };
+      if (!hitsAny(r, biomeSolids, 14)) { biomeSolids.push(r); placed++; }
+    }
+    biomeSolids.push({ x: 0, y: top, w: 16, h: SECTION_H, t: 'border' }, { x: WORLD_W - 16, y: top, w: 16, h: SECTION_H, t: 'border' });
+  }
+  for (const s of biomeSolids) {
+    if (s.t !== P || s.y >= 0 || rnd() > 0.35) continue;
+    const w = 40, h = 22;
+    bushes.push({ x: Math.round(s.x + rnd() * (s.w - w)), y: s.y - h, w, h });
+  }
+})();
+const BIOME_PLATS = biomeSolids.filter(s => s.t === P && s.y < 0);
+
 // ---------------------------------------------------------------------------
 // Pre-rendered art
 // ---------------------------------------------------------------------------
@@ -283,8 +329,10 @@ const GRASS = [
   { main: '#2c7330', top: '#46914a', dark: '#1d5222', tip: '#5fae5c' },
   { main: '#2cc4c8', top: '#7cf0ec', dark: '#1b8c96', tip: '#c2fffa' },
   { main: '#c8383c', top: '#f0665e', dark: '#8c2228', tip: '#ffaea2' },
+  { main: '#9a4ad8', top: '#c88af0', dark: '#6a2a9a', tip: '#e8c0ff' },
+  { main: '#9a4ad8', top: '#c88af0', dark: '#6a2a9a', tip: '#e8c0ff' },
 ];
-const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#46aab4', '#b84c4c'];
+const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#46aab4', '#b84c4c', '#8a4ac8', '#8a4ac8'];
 
 function drawDirtBlock(g, s, rnd, grass) {
   g.fillStyle = '#6b4a2f';
@@ -361,6 +409,36 @@ const [levelCanvas, lg] = makeCanvas(WORLD_W, WORLD_H);
     else drawDirtBlock(lg, s, rnd, GRASS[sec]);
   }
 })();
+
+// Covers the biome sections plus its first platform row, which sits in the red area.
+const [biomeCanvas, bg] = makeCanvas(WORLD_W, 60 - BIOME_TOP);
+(function buildBiome() {
+  const rnd = mulberry32(4242);
+  const purple = GRASS[BIOME_SECTION];
+  for (const s of biomeSolids) {
+    const o = { ...s, y: s.y - BIOME_TOP };
+    if (s.t === W || s.t === 'border') drawBrickWall(bg, o, rnd, WALL_TINT[BIOME_SECTION], purple.dark);
+    else drawDirtBlock(bg, o, rnd, purple);
+  }
+})();
+
+for (const b of bushes) {
+  const [c, g] = makeCanvas(b.w, b.h);
+  // Cartoon style: three round puffs, flat colours, thick outline and a shine dot on each.
+  const puffs = [[10, 14, 8.5], [20, 10, 10], [30, 14, 8.5]];
+  const inside = (x, y) => x >= 0 && y >= 0 && x < b.w && y < b.h &&
+    (puffs.some(([px, py, r]) => (x - px) ** 2 + (y - py) ** 2 <= r * r) || (y >= 15 && x >= 2 && x < b.w - 2));
+  for (let y = 0; y < b.h; y++) {
+    for (let x = 0; x < b.w; x++) {
+      if (!inside(x, y)) continue;
+      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
+      const shine = puffs.some(([px, py, r]) => (x - (px - r * 0.4)) ** 2 + (y - (py - r * 0.4)) ** 2 <= (r * 0.22) ** 2);
+      g.fillStyle = edge ? '#24103a' : shine ? '#c48af0' : y >= b.h - 5 ? '#5a2490' : '#7a3cc0';
+      g.fillRect(x, y, 1, 1);
+    }
+  }
+  b.img = c;
+}
 
 const [skyCanvas, sg] = makeCanvas(VIEW_W, VIEW_H);
 (function buildSky() {
@@ -513,7 +591,28 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
     g.fillRect(x + (facing > 0 ? c : 9 - c), y + r, 1, 1);
   };
   const hilt = '#5a3a1a', guard = '#3a2414';
-  if (it.kind === 'melee') {
+  if (it.style === 'pickaxe') {
+    const head = it.color, dark = shade(it.color, -0.35);
+    if (attacking) {
+      const end = 5 + it.range;
+      for (let c = 15; c < end; c++) px(c, 6, hilt);
+      for (let r = 2; r <= 10; r++) px(end, r, r === 2 || r === 10 ? dark : head);
+      px(end - 1, 3, head); px(end - 1, 9, head);
+    } else {
+      for (let r = 0; r <= 9; r++) px(10, r, hilt);
+      for (let c = 7; c <= 13; c++) px(c, -1, c === 7 || c === 13 ? dark : head);
+      px(8, 0, head); px(12, 0, head);
+    }
+  } else if (it.kind === 'shuriken') {
+    if (!attacking) {
+      for (const [c, r] of [[11, 5], [10, 6], [12, 6], [11, 7]]) px(c, r, it.color);
+      px(11, 6, '#ffffff');
+    }
+  } else if (it.kind === 'laser') {
+    for (let c = 10; c <= 15; c++) px(c, 5, c === 15 ? '#ff3b3b' : it.color);
+    for (let c = 10; c <= 13; c++) px(c, 6, shade(it.color, -0.3));
+    px(11, 7, '#3a3a48'); px(11, 8, '#3a3a48');
+  } else if (it.kind === 'melee') {
     if (attacking) {
       const end = 5 + it.range;
       px(15, 5, guard); px(15, 6, guard); px(15, 7, guard);
@@ -627,12 +726,37 @@ const DASH_SPEED = 340;
 const DASH_TIME = 0.16;
 const DASH_COOLDOWN = 0.8;
 const DOUBLE_TAP = 0.25;
+const SHURIKEN_AMMO = 5;
+const SHURIKEN_BURST_COUNT = 7;
+const SHURIKEN_RELOAD = 1.5;
+const SHURIKEN_BURST_COOLDOWN = 3;
+const SHURIKEN_BURST_GAP = 0.07;
+const LASER_DPS = 30;
+const LASER_TICK = 0.1;
+const LASER_FUEL = 5;
+const LASER_RANGE = 240;
+const LASER_EMPTY_COOLDOWN = 4;
+const JET_SPEED = 180;
+// Flight plus the coast after it adds up to the height of three air jumps.
+const JET_TIME = (3 * AIR_JUMP_V * AIR_JUMP_V - JET_SPEED * JET_SPEED) / (2 * GRAVITY) / JET_SPEED;
+const JET_COOLDOWN = 2;
+const RADAR_TIME = 30;
+const RADAR_COOLDOWN = 60;
 const PUNCH_COOLDOWN = 0.3;
 const PUNCH_BUFFER = 0.15;
 const REGEN_AMOUNT = 5;
 const REGEN_INTERVAL = 5;
 const SPAWN_IMMUNITY = 3;
 const HURT_FLASH = 0.15;
+const BIOME_ROLL_INTERVAL = 60;
+const BIOME_CHANCE = 0.25;
+const BIOME_DURATION = 120;
+const STORM_ROLL_INTERVAL = 10;
+const STORM_CHANCE = 0.1; // per biome platform, every STORM_ROLL_INTERVAL
+const STORM_DELAY = 1;
+const STORM_CLOUD_H = 80;
+const LIGHTNING_DAMAGE = 50;
+const STUN_TIME = 1;
 
 function overlaps(x, y, w, h) {
   for (const s of solids) {
@@ -657,7 +781,11 @@ const me = {
   hp: BASE_HP, maxHp: BASE_HP, dead: false, immuneUntil: 0, flash: 0, regenAt: 0,
   punchT: 0, punchCd: 0, punchBuffer: 0, punchCount: 0, killedBy: '', joinedAt: 0,
   dashT: 0, dashDir: 1, dashCd: 0, charging: false, chargeT: 0,
+  ammo: SHURIKEN_AMMO, burst: 0, burstT: 0, lastThrow: 0,
+  fuel: LASER_FUEL, laserOut: 0, laserTick: 0, beam: null, refueling: false,
+  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, radarUntil: 0, radarCdUntil: 0,
 };
+const radarActive = () => performance.now() < me.radarUntil;
 const picker = hexToHsv(me.color);
 // Wall-clock based so it keeps counting down while the tab is in the background.
 const immuneLeft = () => Math.max(0, (me.immuneUntil - performance.now()) / 1000);
@@ -684,6 +812,11 @@ const keys = new Set();
 let jumpPressedQueued = false;
 let punchQueued = false;
 let dashQueued = 0;
+let powerQueued = '';
+let burstQueued = false;
+let jetQueued = false;
+let middleHeld = false;
+let mouseLeftHeld = false;
 const lastTap = { dir: 0, t: 0 };
 const JUMP_KEYS = ['Space', 'KeyW', 'ArrowUp', 'KeyZ', 'KeyK'];
 const PUNCH_KEYS = ['Enter', 'NumpadEnter', 'KeyS'];
@@ -701,15 +834,35 @@ addEventListener('keydown', e => {
     if (!e.repeat && (e.code === 'Enter' || e.code === 'Space')) startGame();
     return;
   }
+  if (adminOpen && !adminUnlocked()) {
+    adminPasswordKey(e);
+    return;
+  }
+  if (adminOpen && adminSearchFocus) {
+    adminSearchKey(e);
+    return;
+  }
+  if (e.code === 'Tab') {
+    e.preventDefault();
+    if (!e.repeat) toggleAdmin();
+  }
   if (e.code === 'KeyE' && !e.repeat && state === 'game' && !me.dead) {
     inventoryOpen = !inventoryOpen;
-    if (inventoryOpen) pickerOpen = false;
+    if (inventoryOpen) {
+      pickerOpen = false;
+      closeAdmin();
+    }
   }
-  if (e.code === 'Escape') inventoryOpen = pickerOpen = false;
+  if (e.code === 'Escape') {
+    inventoryOpen = pickerOpen = false;
+    closeAdmin();
+  }
   if (!e.repeat && !keys.has(e.code)) {
     if (JUMP_KEYS.includes(e.code)) jumpPressedQueued = true;
     if (PUNCH_KEYS.includes(e.code)) punchQueued = 'key';
-    if (e.code === 'KeyQ') dashQueued = moveDir() || me.facing;
+    if (e.code === 'KeyQ') powerQueued = 'q';
+    if (e.code === 'Digit1' || e.code === 'Numpad1') selectHand('hand');
+    if (e.code === 'Digit2' || e.code === 'Numpad2') selectHand('hand2');
     const tapDir = ['ArrowLeft', 'KeyA'].includes(e.code) ? -1 : ['ArrowRight', 'KeyD'].includes(e.code) ? 1 : 0;
     if (tapDir) {
       const now = performance.now();
@@ -725,7 +878,10 @@ addEventListener('keydown', e => {
   keys.add(e.code);
 });
 addEventListener('keyup', e => keys.delete(e.code));
-addEventListener('blur', () => keys.clear());
+addEventListener('blur', () => {
+  keys.clear();
+  middleHeld = mouseLeftHeld = me.refueling = false;
+});
 
 const mouse = { x: -1, y: -1 };
 function toCanvas(e) {
@@ -745,14 +901,16 @@ const PICKER = { x: VIEW_W / 2 - 64, y: 21, w: 128, h: 76 };
 const SV_RECT = { x: PICKER.x + 4, y: PICKER.y + 4, w: 100, h: 68 };
 const HUE_RECT = { x: PICKER.x + 110, y: PICKER.y + 4, w: 14, h: 68 };
 const INV_COLS = 10, INV_SLOT = 16, INV_GAP = 2;
-const INV_PANEL = { x: VIEW_W / 2 - 117, y: 33, w: 234, h: 204 };
+const INV_PANEL = { x: VIEW_W / 2 - 122, y: 33, w: 244, h: 204 };
 const invSlotRect = i => ({
   x: INV_PANEL.x + 6 + (i % INV_COLS) * (INV_SLOT + INV_GAP),
   y: INV_PANEL.y + 20 + Math.floor(i / INV_COLS) * (INV_SLOT + INV_GAP),
   w: INV_SLOT, h: INV_SLOT,
 });
-const EQUIP_SLOTS = ['hand', 'head', 'feet'];
-const equipSlotRect = i => ({ x: INV_PANEL.x + 196, y: INV_PANEL.y + 30 + i * 40, w: 22, h: 22 });
+const DELETE_BTN = { x: VIEW_W - 24, y: VIEW_H - 24, w: 18, h: 18 };
+const EQUIP_SLOTS = ['hand', 'hand2', 'head', 'feet', 'power'];
+const EQUIP_LABELS = { hand: 'WEAPON 1', hand2: 'WEAPON 2', head: 'HEAD', feet: 'FEET', power: 'POWER' };
+const equipSlotRect = i => ({ x: INV_PANEL.x + 201, y: INV_PANEL.y + 22 + i * 36, w: 22, h: 22 });
 let pickerOpen = false;
 let dragTarget = null;
 
@@ -786,28 +944,56 @@ canvas.addEventListener('pointerdown', e => {
   }
   if (over(COLOR_BTN)) {
     pickerOpen = !pickerOpen;
-    if (pickerOpen) inventoryOpen = false;
+    if (pickerOpen) {
+      inventoryOpen = false;
+      closeAdmin();
+    }
+    return;
+  }
+  if (adminOpen) {
+    if (over(ADMIN_PANEL)) {
+      if (e.button === 0) adminClick();
+      return;
+    }
+    adminSearchFocus = false;
+  }
+  if (inventoryOpen && over(DELETE_BTN)) {
+    if (e.button === 0) deleteMarkedItems();
     return;
   }
   if (inventoryOpen && over(INV_PANEL)) {
+    if (e.button === 2) {
+      for (let i = 0; i < inventory.length; i++) {
+        if (over(invSlotRect(i))) { inventory[i].marked = !inventory[i].marked; return; }
+      }
+      return;
+    }
     if (e.button !== 0) return;
     for (let i = 0; i < inventory.length; i++) {
       if (over(invSlotRect(i))) { toggleEquip(inventory[i]); return; }
     }
     EQUIP_SLOTS.forEach((slot, i) => {
-      if (over(equipSlotRect(i)) && equipped[slot]) toggleEquip(equipped[slot]);
+      if (!over(equipSlotRect(i))) return;
+      if (equipped[slot]) toggleEquip(equipped[slot]);
+      else if (slot === 'hand' || slot === 'hand2') selectHand(slot);
     });
     return;
   }
   if (e.button === 1) {
     e.preventDefault();
-    dashQueued = moveDir() || me.facing;
+    middleHeld = true;
+    powerQueued = 'middle';
     return;
   }
   if (e.button === 2) {
-    if (heldItem().kind === 'bow') {
+    const kind = heldItem().kind;
+    if (kind === 'bow') {
       me.charging = true;
       me.chargeT = 0;
+    } else if (kind === 'shuriken') {
+      burstQueued = true;
+    } else if (kind === 'laser') {
+      me.refueling = true;
     }
     return;
   }
@@ -821,7 +1007,10 @@ canvas.addEventListener('pointerdown', e => {
     }
     return;
   }
-  if (e.button === 0) punchQueued = 'mouse';
+  if (e.button === 0) {
+    punchQueued = 'mouse';
+    mouseLeftHeld = true;
+  }
 });
 canvas.addEventListener('pointermove', e => {
   toCanvas(e);
@@ -836,7 +1025,26 @@ addEventListener('pointerup', e => {
     toCanvas(e);
     releaseCharge();
   }
+  if (e.button === 2) me.refueling = false;
+  if (e.button === 1) middleHeld = false;
+  if (e.button === 0) mouseLeftHeld = false;
 });
+// Trackpads fire a stream of wheel events per swipe, so ignore repeats briefly.
+let lastWheelSwap = 0;
+canvas.addEventListener('wheel', e => {
+  if (state !== 'game') return;
+  e.preventDefault();
+  if (adminOpen && over(ADMIN_PANEL)) {
+    if (adminTab === 'inventory') {
+      adminScroll += Math.sign(e.deltaY) * Math.max(ADMIN_ROW, Math.min(60, Math.abs(e.deltaY) / 2));
+      clampAdminScroll();
+    }
+    return;
+  }
+  if (e.deltaY === 0 || performance.now() - lastWheelSwap < 200) return;
+  lastWheelSwap = performance.now();
+  selectHand(activeHand === 'hand' ? 'hand2' : 'hand');
+}, { passive: false });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('auxclick', e => e.preventDefault());
 
@@ -847,10 +1055,16 @@ const moveDir = () => (held(['ArrowRight', 'KeyD']) ? 1 : 0) - (held(['ArrowLeft
 // Movement
 // ---------------------------------------------------------------------------
 function stepPlayer(p, dt) {
-  const left = held(['ArrowLeft', 'KeyA']);
-  const right = held(['ArrowRight', 'KeyD']);
-  const jumpHeld = held(JUMP_KEYS);
+  const stunned = performance.now() < p.stunUntil;
+  const left = !stunned && held(['ArrowLeft', 'KeyA']);
+  const right = !stunned && held(['ArrowRight', 'KeyD']);
+  const jumpHeld = !stunned && held(JUMP_KEYS);
   const dir = (right ? 1 : 0) - (left ? 1 : 0);
+  if (stunned) {
+    jumpPressedQueued = jetQueued = false;
+    p.jetting = false;
+    p.dashT = 0;
+  }
 
   p.onGround = !!overlaps(p.x, p.y + 1, PLAYER_W, PLAYER_H) && p.vy >= 0;
   const wallL = !p.onGround && touchesGrabbable(p.x - WALL_PROBE, p.y);
@@ -889,6 +1103,30 @@ function stepPlayer(p, dt) {
     }
   }
   p.vy = Math.min(p.vy, MAX_FALL);
+
+  // Jetpack: middle click, or keep holding jump once you start falling.
+  if (powerKey() === 'jetpack') {
+    if (!p.jetting && !p.jetEmpty && p.jetFuel > 0.02 && (jetQueued || (jumpHeld && !p.onGround && p.vy >= 0 && p.wallDir === 0))) {
+      p.jetting = true;
+      p.dashT = 0;
+    }
+  } else if (p.jetting) {
+    p.jetting = false;
+  }
+  jetQueued = false;
+  if (p.jetting) {
+    if (p.jetFuel <= 0 || !(middleHeld || jumpHeld)) {
+      p.jetting = false;
+      if (p.jetFuel <= 0) p.jetEmpty = true;
+    } else {
+      p.jetFuel = Math.max(0, p.jetFuel - dt);
+      p.vy = -JET_SPEED;
+      if (Math.random() < 0.7) {
+        particles.push({ x: p.x + PLAYER_W / 2 - p.facing * 4, y: p.y + PLAYER_H - 4, vx: (Math.random() - 0.5) * 20, vy: 60 + Math.random() * 40,
+          life: 0.3, max: 0.3, color: Math.random() < 0.5 ? '#ff9a3d' : '#ffe66d', g: 0 });
+      }
+    }
+  }
 
   if (p.dashT > 0) {
     p.dashT -= dt;
@@ -1031,7 +1269,7 @@ const remotes = new Map();
 let netStatus = 'OFFLINE';
 let room = null;
 let sendState = null, sendHit = null, sendDamage = null;
-let sendChests = null, sendChestHit = null, sendChestBreak = null, sendArrow = null;
+let sendChests = null, sendChestHit = null, sendChestBreak = null, sendArrow = null, sendStorm = null, sendBiome = null;
 let myPeerId = 'local';
 
 function packState() {
@@ -1041,8 +1279,10 @@ function packState() {
     f: me.facing, a: me.anim, j: me.airJumpCount, p: me.punchCount,
     hp: me.hp, mh: me.maxHp, d: me.dead ? 1 : 0, i: immuneLeft() > 0 ? 1 : 0,
     c: me.color, n: me.name, t: me.joinedAt,
-    w: equipped.hand ? equipped.hand.key : '', ar: (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0),
+    w: heldKey(), ar: (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0),
     ch: me.charging ? Math.round(Math.min(1, me.chargeT / BOW_CHARGE_TIME) * 10) : -1,
+    rb: radarActive() ? 1 : 0, jt: me.jetting ? 1 : 0, bu: myBush(),
+    lz: me.beam ? [Math.round(me.beam.x2), Math.round(me.beam.y2)] : 0,
   };
 }
 function broadcastState() {
@@ -1075,6 +1315,10 @@ function onRemote(id, d) {
   r.w = typeof d.w === 'string' && ITEMS[d.w] ? d.w : '';
   r.ar = d.ar | 0;
   r.ch = Number.isFinite(d.ch) ? d.ch : -1;
+  r.rb = !!d.rb;
+  r.jt = !!d.jt;
+  r.bu = Number.isInteger(d.bu) && d.bu >= 0 && d.bu < bushes.length ? d.bu : -1;
+  r.lz = Array.isArray(d.lz) && Number.isFinite(d.lz[0]) && Number.isFinite(d.lz[1]) ? [d.lz[0], d.lz[1]] : null;
   r.tx = d.x; r.ty = d.y;
   r.vx = Number(d.vx) || 0; r.vy = Number(d.vy) || 0;
   r.f = d.f < 0 ? -1 : 1;
@@ -1088,27 +1332,40 @@ function onRemote(id, d) {
 // The victim is authoritative over its own HP: attackers only request a hit.
 // Works out how much a hit request is worth and whether the attacker at
 // (ax, ay) could plausibly have landed it on a target at (tx, ty).
-function validateHit(d, ax, ay, tx, ty, slackX) {
+function validateHit(d, ax, ay, tx, ty, slackX, forChest) {
   const it = attackItem(d && d.w);
   if (!it) return null;
-  if (it.kind === 'bow') {
+  const damage = itemDamage(it, d, forChest);
+  // max hits per window (ms); generous enough for network bunching.
+  if (it.kind === 'bow' || it.kind === 'shuriken') {
     if (Math.hypot(ax - tx, ay - ty) > ARROW_SPEED * ARROW_LIFE + 80) return null;
-    return { damage: d.ch ? it.charged : it.damage, gap: it.cooldown * 700 };
+    return it.kind === 'bow'
+      ? { damage, max: 1, window: it.cooldown * 700, key: 'bow' }
+      : { damage, max: SHURIKEN_BURST_COUNT, window: SHURIKEN_RELOAD * 900, key: 'shuriken' };
+  }
+  if (it.kind === 'laser') {
+    if (Math.hypot(ax - tx, ay - ty) > LASER_RANGE + 60) return null;
+    return { damage, max: Math.round(1 / LASER_TICK) + 1, window: 1000, key: 'laser' };
   }
   if (Math.abs(ax - tx) > it.range + slackX || Math.abs(ay - ty) > 32) return null;
-  return { damage: it.damage, gap: PUNCH_COOLDOWN * 700 };
+  return { damage, max: 1, window: PUNCH_COOLDOWN * 700, key: 'melee' };
+}
+
+function allowHit(r, key, hit) {
+  const now = performance.now();
+  const log = r[key] || (r[key] = []);
+  while (log.length && now - log[0] > hit.window) log.shift();
+  if (log.length >= hit.max) return false;
+  log.push(now);
+  return true;
 }
 
 function onHit(id, d) {
   if (state !== 'game' || me.dead || immuneLeft() > 0) return;
   const r = remotes.get(id);
   if (!r || r.dead) return;
-  const hit = validateHit(d, r.tx, r.ty, me.x, me.y, 28);
-  if (!hit) return;
-  const now = performance.now();
-  const key = d.w === 'punch' || !ITEMS[d.w] || ITEMS[d.w].kind !== 'bow' ? 'lastHitAt' : 'lastArrowAt';
-  if (now - (r[key] || 0) < hit.gap) return;
-  r[key] = now;
+  const hit = validateHit(d, r.tx, r.ty, me.x, me.y, 28, false);
+  if (!hit || hit.damage <= 0 || !allowHit(r, 'hits_' + hit.key, hit)) return;
 
   me.hp = Math.max(0, me.hp - hit.damage);
   me.flash = HURT_FLASH;
@@ -1125,7 +1382,7 @@ function onDamage(id, d) {
   const amount = Math.max(1, Math.min(HP_LIMIT, d.a | 0));
   r.hp = clampHp(d.hp);
   r.flash = HURT_FLASH;
-  addDamageNumber(r.x, r.y, amount);
+  if (!hiddenFromMe(r)) addDamageNumber(r.x, r.y, amount);
 }
 
 async function startNet() {
@@ -1142,6 +1399,17 @@ async function startNet() {
     const chestHitAction = room.makeAction('chestHit');
     const chestBreakAction = room.makeAction('chestBreak');
     const arrowAction = room.makeAction('arrow');
+    const stormAction = room.makeAction('storm');
+    sendStorm = d => stormAction.send(d);
+    stormAction.onMessage = (d, ctx) => onStorm(ctx.peerId, d);
+    const biomeAction = room.makeAction('biome');
+    sendBiome = d => biomeAction.send(d);
+    biomeAction.onMessage = d => {
+      if (d && d.open && !biomeOpen) {
+        openBiome(true);
+        chestsDirty = true;
+      }
+    };
     sendArrow = d => arrowAction.send(d);
     arrowAction.onMessage = (d, ctx) => onRemoteArrow(ctx.peerId, d);
     sendState = d => stateAction.send(d);
@@ -1188,6 +1456,7 @@ function tickRegen() {
 setInterval(() => {
   tickRegen();
   tickChests();
+  tickStorms();
   broadcastState();
 }, 66);
 
@@ -1197,7 +1466,11 @@ function updateRemotes(dt) {
     if (now - r.last > 10000) { remotes.delete(id); continue; }
     r.flash = Math.max(0, r.flash - dt);
     r.punchT = Math.max(0, r.punchT - dt);
-    if (r.ch >= 0 && now - r.last > 500) r.ch = -1;
+    if (now - r.last > 500) { r.ch = -1; r.lz = null; r.jt = false; }
+    if (r.jt && !r.dead && !hiddenFromMe(r) && Math.random() < 0.7) {
+      particles.push({ x: r.x + PLAYER_W / 2 - r.f * 4, y: r.y + PLAYER_H - 4, vx: (Math.random() - 0.5) * 20, vy: 60 + Math.random() * 40,
+        life: 0.3, max: 0.3, color: Math.random() < 0.5 ? '#ff9a3d' : '#ffe66d', g: 0 });
+    }
     const ahead = Math.min(0.15, (now - r.last) / 1000);
     const px = r.tx + r.vx * ahead, py = r.ty + r.vy * ahead;
     if (Math.abs(px - r.x) > 120 || Math.abs(py - r.y) > 120) { r.x = px; r.y = py; }
@@ -1211,6 +1484,10 @@ function updateRemotes(dt) {
 // Combat
 // ---------------------------------------------------------------------------
 function hitChest(c, msg) {
+  if (chestKind(c) === 'silver' && !canHurtSilver(msg)) {
+    chestBlockedFx(c, msg);
+    return;
+  }
   const host = chestHostId();
   if (host === myPeerId) applyChestHit(c.id, myPeerId, msg);
   else if (sendChestHit) {
@@ -1220,14 +1497,14 @@ function hitChest(c, msg) {
 
 function doMelee() {
   const it = heldItem();
-  const msg = { w: equipped.hand ? equipped.hand.key : 'punch' };
+  const msg = { w: heldKey() || 'punch' };
   me.punchCd = PUNCH_COOLDOWN;
   me.punchT = PUNCH_TIME;
   me.punchCount++;
   const reach = PLAYER_W / 2 + it.range;
   const hx = me.facing > 0 ? me.x + PLAYER_W / 2 : me.x + PLAYER_W / 2 - reach;
   for (const [id, r] of remotes) {
-    if (r.dead) continue;
+    if (r.dead || it.damage <= 0) continue;
     if (rectsOverlap(hx, me.y, reach, PLAYER_H, r.x, r.y, PLAYER_W, PLAYER_H) && sendHit) {
       try { sendHit(msg, id); } catch (e) { /* peer gone */ }
     }
@@ -1242,8 +1519,8 @@ function doMelee() {
 // draws a copy of them.
 const arrows = [];
 
-function fireArrow(charged, aimAtMouse) {
-  const it = heldItem();
+// Unit vector from the player's hand toward the cursor (or straight ahead).
+function aimDir(aimAtMouse) {
   const sx = me.x + PLAYER_W / 2, sy = me.y + 6;
   let dx = me.facing, dy = 0;
   if (aimAtMouse) {
@@ -1253,12 +1530,18 @@ function fireArrow(charged, aimAtMouse) {
     if (len < 1) { dx = me.facing; dy = 0; } else { dx /= len; dy /= len; }
     if (Math.abs(dx) > 0.05) me.facing = dx > 0 ? 1 : -1;
   }
-  me.punchCd = it.cooldown;
+  return { sx, sy, dx, dy };
+}
+
+function fireArrow(charged, aimAtMouse) {
+  const it = heldItem();
+  const { sx, sy, dx, dy } = aimDir(aimAtMouse);
+  if (it.kind === 'bow') me.punchCd = it.cooldown;
   me.punchT = PUNCH_TIME;
   me.punchCount++;
   const a = {
     x: sx, y: sy, vx: dx * ARROW_SPEED, vy: dy * ARROW_SPEED, life: ARROW_LIFE,
-    mine: true, owner: myPeerId, w: equipped.hand.key, ch: charged ? 1 : 0,
+    mine: true, owner: myPeerId, w: heldKey(), ch: charged ? 1 : 0,
   };
   arrows.push(a);
   if (charged) emit(sx, sy, 10, '#ffd84a', 60, 0.3);
@@ -1289,7 +1572,7 @@ function updateArrows(dt) {
     for (let s = 0; s < steps && !gone; s++) {
       a.x += a.vx * dt / steps;
       a.y += a.vy * dt / steps;
-      if (a.x < 0 || a.x > WORLD_W || a.y < -20 || a.y > WORLD_H || overlaps(a.x, a.y, 1, 1)) {
+      if (a.x < 0 || a.x > WORLD_W || a.y < worldTop() - 20 || a.y > WORLD_H || overlaps(a.x, a.y, 1, 1)) {
         emit(a.x, a.y, 4, '#c8b89a', 30, 0.25);
         gone = true;
         break;
@@ -1318,6 +1601,18 @@ function updateArrows(dt) {
 
 function drawArrows(cx, cy) {
   for (const a of arrows) {
+    if (ITEMS[a.w].kind === 'shuriken') {
+      const x = Math.round(a.x - cx), y = Math.round(a.y - cy);
+      const diag = Math.floor(time * 20) % 2;
+      const pts = diag ? [[-1, -1], [1, -1], [-1, 1], [1, 1], [-2, -2], [2, -2], [-2, 2], [2, 2]] : [[0, -1], [0, 1], [-1, 0], [1, 0], [0, -2], [0, 2], [-2, 0], [2, 0]];
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(x - 1, y - 1, 3, 3);
+      ctx.fillStyle = ITEMS.shuriken.color;
+      for (const [px, py] of pts) ctx.fillRect(x + px, y + py, 1, 1);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x, y, 1, 1);
+      continue;
+    }
     const sp = Math.hypot(a.vx, a.vy) || 1;
     const ux = a.vx / sp, uy = a.vy / sp;
     const shaft = a.ch ? '#ffd84a' : a.w === 'gold_bow' ? '#f2c14e' : '#c89a5a';
@@ -1345,6 +1640,126 @@ function releaseCharge() {
   fireArrow(charged, true);
 }
 
+// Shuriken: five throws with no delay, then a reload. Right click throws the
+// rest of them in a quick burst with a longer cooldown. Both share one cooldown.
+function throwShuriken(aimAtMouse) {
+  fireArrow(false, aimAtMouse);
+  me.lastThrow = performance.now();
+}
+
+function updateShuriken(dt) {
+  if (me.burst > 0) {
+    me.burstT -= dt;
+    while (me.burst > 0 && me.burstT <= 0) {
+      throwShuriken(true);
+      me.burst--;
+      me.burstT += SHURIKEN_BURST_GAP;
+    }
+    if (me.burst === 0) me.punchCd = SHURIKEN_BURST_COOLDOWN;
+    return;
+  }
+  if (me.ammo < SHURIKEN_AMMO && me.punchCd <= 0 && performance.now() - me.lastThrow >= SHURIKEN_RELOAD * 1000) {
+    me.ammo = SHURIKEN_AMMO;
+  }
+  if (burstQueued && heldItem().kind === 'shuriken' && me.punchCd <= 0 && me.ammo > 0) {
+    me.burst = SHURIKEN_BURST_COUNT;
+    me.ammo = 0;
+    me.burstT = 0;
+  }
+  burstQueued = false;
+}
+
+function shurikenAttack(aimAtMouse) {
+  if (me.burst > 0 || me.ammo <= 0) return;
+  throwShuriken(aimAtMouse);
+  me.ammo--;
+  if (me.ammo === 0) me.punchCd = SHURIKEN_RELOAD;
+}
+
+// Laser: a continuous beam that burns fuel. Hold right click to refuel.
+function castBeam(sx, sy, dx, dy) {
+  let x = sx, y = sy;
+  for (let d = 0; d < LASER_RANGE; d += 2) {
+    x = sx + dx * d;
+    y = sy + dy * d;
+    if (x < 0 || x > WORLD_W || y < worldTop() || y > WORLD_H || overlaps(x, y, 1, 1)) return { x2: x, y2: y };
+    for (const [id, r] of remotes) {
+      if (!r.dead && arrowHitsPlayer({ x, y }, r.x, r.y)) return { x2: x, y2: y, peer: id };
+    }
+    const c = chests.find(o => x >= o.x && x < o.x + CHEST_W && y >= o.y && y < o.y + CHEST_H);
+    if (c) return { x2: x, y2: y, chest: c };
+  }
+  return { x2: x, y2: y };
+}
+
+function updateLaser(dt) {
+  const holding = heldItem().kind === 'laser';
+  const firing = holding && !inventoryOpen && !pickerOpen && me.laserOut <= 0 && me.fuel > 0 &&
+    (mouseLeftHeld || held(PUNCH_KEYS));
+  if (me.laserOut > 0) {
+    me.laserOut -= dt;
+    if (me.laserOut <= 0) { me.laserOut = 0; me.fuel = 1; }
+  }
+  if (!firing) {
+    if (me.beam) { me.beam = null; broadcastState(); }
+    if (holding && me.refueling && me.laserOut <= 0) me.fuel = Math.min(LASER_FUEL, me.fuel + dt);
+    return;
+  }
+  const { sx, sy, dx, dy } = aimDir(mouseLeftHeld);
+  const hit = castBeam(sx, sy, dx, dy);
+  me.beam = { x1: sx, y1: sy, ...hit };
+  me.fuel = Math.max(0, me.fuel - dt);
+  me.laserTick -= dt;
+  if (me.laserTick <= 0) {
+    me.laserTick += LASER_TICK;
+    const msg = { w: heldKey() };
+    if (hit.peer && sendHit) {
+      try { sendHit(msg, hit.peer); } catch (e) { /* peer gone */ }
+    } else if (hit.chest) {
+      hitChest(hit.chest, msg);
+    }
+    if (Math.random() < 0.8) emit(hit.x2, hit.y2, 2, '#ff6a6a', 40, 0.2);
+  }
+  if (me.fuel <= 0) {
+    me.laserOut = LASER_EMPTY_COOLDOWN;
+    me.beam = null;
+    broadcastState();
+  }
+}
+
+function drawBeam(x1, y1, x2, y2, cx, cy) {
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  const ux = (x2 - x1) / (len || 1), uy = (y2 - y1) / (len || 1);
+  const wobble = Math.floor(time * 30) % 2;
+  for (let d = 0; d <= len; d++) {
+    const x = Math.round(x1 + ux * d - cx), y = Math.round(y1 + uy * d - cy);
+    ctx.fillStyle = (d + wobble) % 3 ? '#ff3b3b' : '#ff8a8a';
+    ctx.fillRect(x - (Math.abs(uy) > 0.7 ? 1 : 0), y - (Math.abs(uy) > 0.7 ? 0 : 1), Math.abs(uy) > 0.7 ? 3 : 1, Math.abs(uy) > 0.7 ? 1 : 3);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x, y, 1, 1);
+  }
+  ctx.fillStyle = '#ffe6e6';
+  ctx.fillRect(Math.round(x2 - cx) - 1, Math.round(y2 - cy) - 1, 3, 3);
+}
+
+// Power slot: dash, jetpack, or radar blocker (one at a time).
+function usePower(source) {
+  const key = powerKey();
+  if (key === 'dash') tryDash(moveDir() || me.facing);
+  else if (key === 'radar_blocker') activateRadar();
+  else if (key === 'jetpack' && source === 'middle') jetQueued = true;
+}
+
+function activateRadar() {
+  const now = performance.now();
+  if (now < me.radarCdUntil) return;
+  me.radarUntil = now + RADAR_TIME * 1000;
+  me.radarCdUntil = me.radarUntil + RADAR_COOLDOWN * 1000;
+  emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 12, '#7a8ad8', 60, 0.5);
+  showToast('RADAR BLOCKER ON: HIDDEN FOR 30S', rarityOf(ITEMS.radar_blocker).text);
+  broadcastState();
+}
+
 // ---------------------------------------------------------------------------
 // Inventory & items
 // ---------------------------------------------------------------------------
@@ -1353,38 +1768,64 @@ const inventory = [];
 let inventoryOpen = false;
 
 const FIST_ITEM = { name: 'FIST', kind: 'melee', damage: PUNCH_DAMAGE, range: PUNCH_RANGE };
-// Drop chances are "1 in N" each; they are used as relative weights.
-const ITEMS = {
-  wood_sword: { name: 'WOODEN SWORD', kind: 'melee', style: 'sword', damage: 7, range: SWORD_RANGE, color: '#b8834a', odds: 2 },
-  leather_helmet: { name: 'LEATHER HELMET', kind: 'helmet', hp: 10, color: '#9a6232', odds: 4 },
-  leather_boots: { name: 'LEATHER BOOTS', kind: 'boots', hp: 10, color: '#8a5428', odds: 5 },
-  stone_sword: { name: 'STONE SWORD', kind: 'melee', style: 'sword', damage: 9, range: SWORD_RANGE, color: '#9a9aa6', odds: 7 },
-  wood_katana: { name: 'WOODEN KATANA', kind: 'melee', style: 'katana', damage: 7, range: KATANA_RANGE, color: '#c8945a', odds: 10 },
-  bow: { name: 'BOW', kind: 'bow', damage: 8, charged: 20, cooldown: 0.5, color: '#a8723e', odds: 15 },
-  iron_sword: { name: 'IRON SWORD', kind: 'melee', style: 'sword', damage: 12, range: SWORD_RANGE, color: '#dfe4ee', odds: 20 },
-  stone_katana: { name: 'STONE KATANA', kind: 'melee', style: 'katana', damage: 9, range: KATANA_RANGE, color: '#a4a4b0', odds: 23 },
-  dash: { name: 'DASH POWER', kind: 'power', color: '#4ae8d0', odds: 25 },
-  gold_bow: { name: 'GOLD BOW', kind: 'bow', damage: 11, charged: 28, cooldown: 0.5, color: '#f2c14e', odds: 30 },
+const RARITY = {
+  common: { label: 'COMMON', bg: '#4a4a56', text: '#c8c8d2' },
+  uncommon: { label: 'UNCOMMON', bg: '#2c5e30', text: '#6ad46a' },
+  rare: { label: 'RARE', bg: '#28487e', text: '#5ab4ff' },
+  epic: { label: 'EPIC', bg: '#55287e', text: '#c47cff' },
 };
-const DROP_TOTAL = Object.values(ITEMS).reduce((a, it) => a + 1 / it.odds, 0);
-function rollChestItem() {
-  let pick = Math.random() * DROP_TOTAL;
-  for (const [key, it] of Object.entries(ITEMS)) {
-    pick -= 1 / it.odds;
+const rarityOf = it => RARITY[it.rarity] || RARITY.common;
+const ITEMS = {
+  wood_sword: { name: 'WOODEN SWORD', kind: 'melee', style: 'sword', damage: 7, range: SWORD_RANGE, color: '#b8834a', rarity: 'common' },
+  leather_helmet: { name: 'LEATHER HELMET', kind: 'helmet', hp: 10, color: '#9a6232', rarity: 'common' },
+  leather_boots: { name: 'LEATHER BOOTS', kind: 'boots', hp: 10, color: '#8a5428', rarity: 'common' },
+  stone_sword: { name: 'STONE SWORD', kind: 'melee', style: 'sword', damage: 9, range: SWORD_RANGE, color: '#9a9aa6', rarity: 'uncommon' },
+  wood_katana: { name: 'WOODEN KATANA', kind: 'melee', style: 'katana', damage: 7, range: KATANA_RANGE, color: '#c8945a', rarity: 'uncommon' },
+  bow: { name: 'BOW', kind: 'bow', damage: 8, charged: 20, cooldown: 0.5, color: '#a8723e', rarity: 'uncommon' },
+  iron_sword: { name: 'IRON SWORD', kind: 'melee', style: 'sword', damage: 12, range: SWORD_RANGE, color: '#dfe4ee', rarity: 'rare' },
+  stone_katana: { name: 'STONE KATANA', kind: 'melee', style: 'katana', damage: 9, range: KATANA_RANGE, color: '#a4a4b0', rarity: 'rare' },
+  dash: { name: 'DASH POWER', kind: 'power', icon: 'power', color: '#4ae8d0', rarity: 'rare' },
+  gold_bow: { name: 'GOLD BOW', kind: 'bow', damage: 11, charged: 28, cooldown: 0.5, color: '#f2c14e', rarity: 'epic' },
+  shuriken: { name: 'SHURIKEN', kind: 'shuriken', damage: 6, color: '#b8c0cc', rarity: 'rare' },
+  stone_pickaxe: { name: 'STONE PICKAXE', kind: 'melee', style: 'pickaxe', damage: 0, chestDamage: 25, range: SWORD_RANGE, color: '#9a9aa6', rarity: 'rare' },
+  iron_katana: { name: 'IRON KATANA', kind: 'melee', style: 'katana', damage: 12, range: KATANA_RANGE, color: '#dfe4ee', rarity: 'epic' },
+  radar_blocker: { name: 'RADAR BLOCKER', kind: 'power', icon: 'radar', color: '#5a6a9a', rarity: 'epic' },
+  jetpack: { name: 'JETPACK POWER', kind: 'power', icon: 'jetpack', color: '#c8383c', rarity: 'epic' },
+  laser_gun: { name: 'LASER GUN', kind: 'laser', icon: 'laser', damage: Math.round(LASER_DPS * LASER_TICK), silverOk: true, color: '#6a7a8a', rarity: 'epic' },
+};
+// Drop chances are "1 in N" each; they are used as relative weights.
+const DROP_TABLES = {
+  wood: { wood_sword: 2, leather_helmet: 4, leather_boots: 5, stone_sword: 7, wood_katana: 10, bow: 15, iron_sword: 20, stone_katana: 23, dash: 25, gold_bow: 30 },
+  silver: { bow: 2, dash: 5, shuriken: 9, stone_pickaxe: 13, iron_katana: 18, radar_blocker: 20, jetpack: 25, laser_gun: 30 },
+};
+function rollChestItem(kind = 'wood') {
+  const table = DROP_TABLES[kind];
+  const total = Object.values(table).reduce((a, n) => a + 1 / n, 0);
+  let pick = Math.random() * total;
+  for (const [key, n] of Object.entries(table)) {
+    pick -= 1 / n;
     if (pick <= 0) return key;
   }
-  return 'wood_sword';
+  return Object.keys(table)[0];
 }
 
-const equipped = { hand: null, head: null, feet: null };
-const slotFor = it => (it.kind === 'melee' || it.kind === 'bow' ? 'hand' : it.kind === 'helmet' ? 'head' : it.kind === 'boots' ? 'feet' : null);
-const heldItem = () => (equipped.hand ? ITEMS[equipped.hand.key] : FIST_ITEM);
+const equipped = { hand: null, hand2: null, head: null, feet: null, power: null };
+let activeHand = 'hand';
+const HAND_KINDS = ['melee', 'bow', 'shuriken', 'laser'];
+const slotFor = it => (HAND_KINDS.includes(it.kind) ? 'hand' : it.kind === 'helmet' ? 'head' : it.kind === 'boots' ? 'feet' : it.kind === 'power' ? 'power' : null);
+const heldKey = () => (equipped[activeHand] ? equipped[activeHand].key : '');
+const heldItem = () => (heldKey() ? ITEMS[heldKey()] : FIST_ITEM);
+const powerKey = () => (equipped.power ? equipped.power.key : '');
 const attackItem = w => {
   if (w === 'punch' || w === undefined) return FIST_ITEM;
   const it = ITEMS[w];
-  return it && (it.kind === 'melee' || it.kind === 'bow') ? it : null;
+  return it && HAND_KINDS.includes(it.kind) ? it : null;
 };
-const hasDash = () => inventory.some(i => i.key === 'dash');
+const itemDamage = (it, msg, forChest) => {
+  if (forChest && it.chestDamage) return it.chestDamage;
+  return it.kind === 'bow' && msg && msg.ch ? it.charged : it.damage;
+};
+const hasDash = () => powerKey() === 'dash';
 
 // Armor raises max HP and current HP by the same amount, so swapping it can't heal.
 function updateMaxHp() {
@@ -1393,36 +1834,255 @@ function updateMaxHp() {
   me.hp = Math.max(1, Math.min(me.maxHp, me.hp + me.maxHp - old));
 }
 
+// Weapons go into the selected weapon slot if it's free, otherwise the other
+// free slot, otherwise they replace the selected one.
 function toggleEquip(item) {
   const it = ITEMS[item.key];
-  const slot = slotFor(it);
-  if (!slot) {
-    if (it.kind === 'power') showToast('DASH: Q / MIDDLE CLICK / DOUBLE TAP');
-    return;
+  let slot = slotFor(it);
+  if (!slot) return;
+  const current = EQUIP_SLOTS.find(s => equipped[s] === item);
+  if (current) {
+    equipped[current] = null;
+    slot = current;
+  } else {
+    if (slot === 'hand') {
+      const other = activeHand === 'hand' ? 'hand2' : 'hand';
+      slot = !equipped[activeHand] ? activeHand : !equipped[other] ? other : activeHand;
+    }
+    equipped[slot] = item;
   }
-  equipped[slot] = equipped[slot] === item ? null : item;
-  if (slot === 'hand') me.charging = false;
+  if (slot === activeHand) cancelWeaponActions();
+  if (slot === 'power') me.jetting = false;
   updateMaxHp();
   broadcastState();
 }
 
-let toast = null;
-function showToast(text) {
-  toast = { text, life: 2.5 };
+function cancelWeaponActions() {
+  me.charging = false;
+  me.chargeT = 0;
+  if (me.burst > 0) me.punchCd = SHURIKEN_BURST_COOLDOWN;
+  me.burst = 0;
+  me.beam = null;
+  me.punchBuffer = 0;
 }
 
-function grantChestReward() {
+function selectHand(slot) {
+  if (slot === activeHand || state !== 'game' || me.dead) return;
+  activeHand = slot;
+  cancelWeaponActions();
+  broadcastState();
+}
+
+function deleteMarkedItems() {
+  const doomed = inventory.filter(i => i.marked);
+  if (!doomed.length) return;
+  for (const item of doomed) {
+    for (const slot of EQUIP_SLOTS) if (equipped[slot] === item) toggleEquip(item);
+  }
+  for (let i = inventory.length - 1; i >= 0; i--) if (inventory[i].marked) inventory.splice(i, 1);
+  showToast('DELETED ' + doomed.length + (doomed.length === 1 ? ' ITEM' : ' ITEMS'), '#ff8a8a');
+}
+
+let toast = null;
+function showToast(text, color = '#ffe66d') {
+  toast = { text, color, life: 2.5 };
+}
+
+const POWER_HELP = {
+  dash: 'Q / MIDDLE CLICK / DOUBLE TAP',
+  jetpack: 'MIDDLE CLICK / HOLD JUMP',
+  radar_blocker: 'Q / MIDDLE CLICK',
+};
+
+function grantChestReward(kind = 'wood') {
   if (inventory.length >= INVENTORY_SIZE) {
     showToast('INVENTORY FULL');
     return;
   }
-  const key = rollChestItem();
+  const key = rollChestItem(kind);
   const it = ITEMS[key];
+  addItem(key);
+  showToast('GOT ' + it.name + '!' + (POWER_HELP[key] ? ' ' + POWER_HELP[key] : ''), rarityOf(it).text);
+}
+
+function addItem(key) {
   const item = { key };
   inventory.push(item);
-  const slot = slotFor(it);
-  if (slot && !equipped[slot]) toggleEquip(item);
-  showToast(key === 'dash' ? 'GOT DASH POWER! Q / MIDDLE CLICK / DOUBLE TAP' : 'GOT ' + it.name + '!');
+  const slot = slotFor(ITEMS[key]);
+  if (slot && (slot === 'hand' ? !equipped.hand || !equipped.hand2 : !equipped[slot])) toggleEquip(item);
+  return item;
+}
+
+// ---------------------------------------------------------------------------
+// Admin panel (Tab), only for players with LARP in their name
+// ---------------------------------------------------------------------------
+const isAdmin = () => me.name.includes('LARP');
+// The page source is public, so only a hash of the password is kept here.
+const ADMIN_PASS_HASH = 4114122251;
+const hashText = s => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0, 2166136261);
+const ADMIN_PASS_MAX = 12;
+let adminPass = '';
+let adminPassError = 0;
+function adminNames() {
+  try {
+    const list = JSON.parse(localStorage.getItem('combat.adminNames') || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return [];
+  }
+}
+const adminUnlocked = () => adminNames().includes(me.name);
+function unlockAdmin() {
+  try {
+    localStorage.setItem('combat.adminNames', JSON.stringify([...adminNames(), me.name]));
+  } catch (e) { /* storage unavailable */ }
+}
+let adminOpen = false;
+let adminTab = 'teleport';
+let adminSearch = '';
+let adminSearchFocus = false;
+let adminScroll = 0;
+const ADMIN_PANEL = { x: VIEW_W / 2 - 130, y: 26, w: 260, h: 200 };
+const ADMIN_TABS = [{ id: 'teleport', label: 'TELEPORT' }, { id: 'inventory', label: 'INVENTORY' }];
+const adminTabRect = i => ({ x: ADMIN_PANEL.x + 6 + i * 86, y: ADMIN_PANEL.y + 17, w: 82, h: 14 });
+// Layer 2 is the second half of the layer 1 biome, so it isn't a separate stop.
+// Layer 6 is the thunder biome; teleporting there summons it if it hasn't appeared yet.
+const tpLayers = () => [1, 3, 4, 5, 6];
+const layerName = layer => (layer === 6 ? 'THUNDER BIOME' : 'LAYER ' + layer);
+const tpBtnRect = i => ({ x: ADMIN_PANEL.x + 40, y: ADMIN_PANEL.y + 50 + i * 29, w: 180, h: 25 });
+const ADMIN_SEARCH = { x: ADMIN_PANEL.x + 6, y: ADMIN_PANEL.y + 37, w: ADMIN_PANEL.w - 62, h: 14 };
+const ADMIN_SEARCH_BTN = { x: ADMIN_PANEL.x + ADMIN_PANEL.w - 52, y: ADMIN_PANEL.y + 37, w: 46, h: 14 };
+const ADMIN_LIST = { x: ADMIN_PANEL.x + 6, y: ADMIN_PANEL.y + 56, w: ADMIN_PANEL.w - 12, h: ADMIN_PANEL.h - 62 };
+const ADMIN_ROW = 18, ADMIN_HEADER = 13, ADMIN_SEARCH_MAX = 20;
+const ADMIN_CATEGORIES = [
+  { label: 'WEAPONS', test: it => HAND_KINDS.includes(it.kind) },
+  { label: 'ARMOR', test: it => it.kind === 'helmet' || it.kind === 'boots' },
+  { label: 'POWER', test: it => it.kind === 'power' },
+];
+
+function toggleAdmin() {
+  if (!isAdmin() || state !== 'game' || me.dead) return;
+  adminOpen = !adminOpen;
+  adminSearchFocus = false;
+  adminPass = '';
+  adminPassError = 0;
+  if (adminOpen) inventoryOpen = pickerOpen = false;
+}
+
+function adminPasswordKey(e) {
+  e.preventDefault();
+  if (e.code === 'Tab' || e.code === 'Escape') {
+    if (!e.repeat) closeAdmin();
+  } else if (e.code === 'Backspace') {
+    adminPass = adminPass.slice(0, -1);
+  } else if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+    if (hashText(adminPass) === ADMIN_PASS_HASH) {
+      unlockAdmin();
+      showToast('ADMIN UNLOCKED', '#6ad46a');
+    } else {
+      adminPassError = 1;
+    }
+    adminPass = '';
+  } else if (e.key.length === 1 && /[a-z0-9]/i.test(e.key) && adminPass.length < ADMIN_PASS_MAX) {
+    adminPass += e.key.toUpperCase();
+    adminPassError = 0;
+  }
+}
+
+function closeAdmin() {
+  adminOpen = adminSearchFocus = false;
+}
+
+function adminRows() {
+  const q = adminSearch.trim();
+  const rows = [];
+  let y = 0;
+  for (const cat of ADMIN_CATEGORIES) {
+    const keys = Object.keys(ITEMS).filter(k => cat.test(ITEMS[k]) && (!q || ITEMS[k].name.includes(q)));
+    if (!keys.length) continue;
+    rows.push({ header: cat.label, y, h: ADMIN_HEADER });
+    y += ADMIN_HEADER;
+    for (const key of keys) {
+      rows.push({ key, y, h: ADMIN_ROW });
+      y += ADMIN_ROW;
+    }
+  }
+  return { rows, height: y };
+}
+
+function clampAdminScroll() {
+  adminScroll = Math.max(0, Math.min(adminRows().height - ADMIN_LIST.h, adminScroll));
+}
+
+function adminRowAtMouse() {
+  if (!over(ADMIN_LIST)) return null;
+  const ly = mouse.y - ADMIN_LIST.y + adminScroll;
+  return adminRows().rows.find(r => r.key && ly >= r.y && ly < r.y + r.h) || null;
+}
+
+function adminClick() {
+  if (!adminUnlocked()) return;
+  adminSearchFocus = false;
+  ADMIN_TABS.forEach((t, i) => {
+    if (over(adminTabRect(i))) adminTab = t.id;
+  });
+  if (adminTab === 'teleport') {
+    tpLayers().forEach((layer, i) => {
+      if (over(tpBtnRect(i))) adminTeleport(layer);
+    });
+    return;
+  }
+  if (over(ADMIN_SEARCH) || over(ADMIN_SEARCH_BTN)) {
+    adminSearchFocus = true;
+    return;
+  }
+  const row = adminRowAtMouse();
+  if (row) adminGive(row.key);
+}
+
+function adminSearchKey(e) {
+  e.preventDefault();
+  if (e.code === 'Backspace') adminSearch = adminSearch.slice(0, -1);
+  else if (['Enter', 'NumpadEnter', 'Escape', 'Tab'].includes(e.code)) adminSearchFocus = false;
+  else if (e.key.length === 1 && /[a-z0-9 \-]/i.test(e.key) && adminSearch.length < ADMIN_SEARCH_MAX) adminSearch += e.key.toUpperCase();
+  adminScroll = 0;
+}
+
+function adminGive(key) {
+  if (inventory.length >= INVENTORY_SIZE) {
+    showToast('INVENTORY FULL');
+    return;
+  }
+  addItem(key);
+  showToast('ADDED ' + ITEMS[key].name, rarityOf(ITEMS[key]).text);
+}
+
+function adminTeleport(layer) {
+  const sec = layer - 1;
+  const summoned = sec >= BIOME_SECTION && !biomeOpen;
+  if (summoned) {
+    openBiome(true);
+    if (sendBiome) {
+      try { sendBiome({ open: 1 }); } catch (e) { /* ignore */ }
+    }
+  }
+  if (sec === 0) {
+    spawn(me);
+  } else {
+    const spots = solids.filter(s => s.t === P && s.w >= 40 && sectionOf(s.y) === sec &&
+      !overlaps(s.x + s.w / 2 - PLAYER_W / 2, s.y - PLAYER_H - 1, PLAYER_W, PLAYER_H));
+    const s = spots[Math.floor(Math.random() * spots.length)];
+    me.x = s.x + s.w / 2 - PLAYER_W / 2;
+    me.y = s.y - PLAYER_H - 1;
+    me.vx = me.vy = 0;
+  }
+  me.jetting = false;
+  me.dashT = 0;
+  cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, me.x - VIEW_W / 2));
+  cam.y = Math.max(worldTop(), Math.min(WORLD_H - VIEW_H, me.y - VIEW_H / 2));
+  closeAdmin();
+  broadcastState();
+  if (!summoned) showToast('TELEPORTED TO ' + layerName(layer), GRASS[sec].top);
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,8 +2107,41 @@ const CHEST_SPRITE = [
   '.oooooooooooo.',
 ];
 const CHEST_PAL = { o: '#2a1608', h: '#d29a5a', w: '#a8672f', d: '#7a4520', m: '#6a6a78', y: '#f2c14e' };
+const SILVER_PAL = { o: '#1a1c28', h: '#f4f7fc', w: '#c2c8d4', d: '#868ea0', m: '#4e5466', y: '#4ae8f0' };
+// Silver chests are tougher, and only hits stronger than a stone sword can damage them.
+const SILVER_CHEST_HP = 100;
+const SILVER_MIN_DAMAGE = ITEMS.stone_sword.damage + 1;
+// How many of each chest kind every map section keeps (section 0 is the bottom).
+const CHEST_MIX = [
+  { wood: 5, silver: 0 },
+  { wood: 3, silver: 2 },
+  { wood: 0, silver: 5 },
+  { wood: 0, silver: 5 },
+  { wood: 0, silver: 5 },
+];
+const chestKind = c => c.k || (sectionOf(c.y + CHEST_H) >= 2 ? 'silver' : 'wood');
+const chestMaxHp = c => (chestKind(c) === 'silver' ? SILVER_CHEST_HP : CHEST_HP);
+const hitDamage = msg => itemDamage(attackItem(msg && msg.w) || FIST_ITEM, msg, true);
+const canHurtSilver = msg => {
+  const it = attackItem(msg && msg.w) || FIST_ITEM;
+  return !!it.silverOk || itemDamage(it, msg, true) >= SILVER_MIN_DAMAGE;
+};
 const CHEST_SURFACES = solids.filter(s => (s.t === P || s.t === 'ground') && s.w >= CHEST_W + 8);
 const chestSection = c => sectionOf(c.y + CHEST_H);
+// The purple biome has 11 fixed chest spots, split over its two sections.
+const BIOME_CHEST_MIX = { wood: 3, silver: 3 };
+const BIOME_CHEST_SPOTS = (() => {
+  const rnd = mulberry32(778);
+  const spots = [];
+  for (const [sec, n] of [[BIOME_SECTION, 6], [BIOME_SECTION + 1, 5]]) {
+    const plats = BIOME_PLATS.filter(s => sectionOf(s.y) === sec);
+    for (let i = 0; i < n && plats.length; i++) {
+      const s = plats.splice(Math.floor(rnd() * plats.length), 1)[0];
+      spots.push({ x: Math.round(s.x + s.w / 2 - CHEST_W / 2), y: s.y - CHEST_H });
+    }
+  }
+  return spots;
+})();
 
 let chests = [];
 let chestsKnown = false;
@@ -1493,26 +2186,49 @@ function broadcastChests() {
   lastChestBroadcast = performance.now();
   chestsDirty = false;
   if (!sendChests) return;
-  try { sendChests({ l: chests.map(c => [c.id, c.x, c.y, c.hp]) }); } catch (e) { /* ignore */ }
+  try { sendChests({ l: chests.map(c => [c.id, c.x, c.y, c.hp, c.k]), b: biomeOpen ? Math.max(1, Math.round(biomeCloseAt - performance.now())) : 0 }); } catch (e) { /* ignore */ }
 }
 
 function tickChests() {
-  if (state !== 'game' || !isChestHost()) return;
+  if (state !== 'game' || !isChestHost()) {
+    nextBiomeRoll = nextStormRoll = 0;
+    return;
+  }
   const now = performance.now();
   if (!chestsKnown) {
     // Give an existing host time to tell us about its chests before making our own.
     if (netStatus !== 'OFFLINE' && now - joinedPerf < 2500) return;
     chestsKnown = true;
   }
+  tickBiomeEvents(now);
   let added = false;
+  if (biomeOpen) {
+    for (const k of ['wood', 'silver']) {
+      let have = chests.filter(c => chestSection(c) >= BIOME_SECTION && chestKind(c) === k).length;
+      while (have < BIOME_CHEST_MIX[k]) {
+        const free = BIOME_CHEST_SPOTS.filter(sp => !chests.some(c => c.x === sp.x && c.y === sp.y));
+        if (!free.length) break;
+        const spot = free[Math.floor(Math.random() * free.length)];
+        const c = { id: Math.random().toString(36).slice(2, 10), ...spot, k, hp: 0, flash: 0 };
+        c.hp = chestMaxHp(c);
+        chests.push(c);
+        have++;
+        added = true;
+      }
+    }
+  }
   for (let sec = 0; sec < SECTIONS; sec++) {
-    let have = chests.filter(c => chestSection(c) === sec).length;
-    while (have < CHEST_COUNT) {
-      const spot = randomChestSpot(sec);
-      if (!spot) break;
-      chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, hp: CHEST_HP, flash: 0 });
-      have++;
-      added = true;
+    for (const k of ['wood', 'silver']) {
+      let have = chests.filter(c => chestSection(c) === sec && chestKind(c) === k).length;
+      while (have < CHEST_MIX[sec][k]) {
+        const spot = randomChestSpot(sec);
+        if (!spot) break;
+        const c = { id: Math.random().toString(36).slice(2, 10), ...spot, k, hp: 0, flash: 0 };
+        c.hp = chestMaxHp(c);
+        chests.push(c);
+        have++;
+        added = true;
+      }
     }
   }
   if (added || chestsDirty || now - lastChestBroadcast > 1000) broadcastChests();
@@ -1523,6 +2239,13 @@ function chestHitFx(c, amount) {
   addDamageNumber(c.x + CHEST_W / 2 - PLAYER_W / 2, c.y + 4, amount);
 }
 
+function chestBlockedFx(c, msg) {
+  emit(c.x + CHEST_W / 2, c.y + CHEST_H / 2, 6, '#e8eef8', 70, 0.25);
+  damageNumbers.push({ x: c.x + CHEST_W / 2, y: c.y - 12, text: '0', life: 0.8 });
+  const it = attackItem(msg && msg.w) || FIST_ITEM;
+  showToast(it.kind === 'bow' ? 'MAYBE TRY HOLDING RIGHT CLICK' : 'NEED A WEAPON STRONGER THAN A STONE SWORD');
+}
+
 function applyChestHit(chestId, attackerId, d) {
   const c = chests.find(o => o.id === chestId);
   if (!c) return;
@@ -1530,21 +2253,20 @@ function applyChestHit(chestId, attackerId, d) {
   if (attackerId !== myPeerId) {
     const r = remotes.get(attackerId);
     if (!r || r.dead) return;
-    const hit = validateHit(d, r.tx, r.ty, c.x, c.y, 32);
-    if (!hit) return;
-    const key = attackItem(d.w).kind === 'bow' ? 'lastChestArrowAt' : 'lastChestHitAt';
-    const now = performance.now();
-    if (now - (r[key] || 0) < hit.gap) return;
-    r[key] = now;
+    const hit = validateHit(d, r.tx, r.ty, c.x, c.y, 32, true);
+    if (!hit || !allowHit(r, 'chestHits_' + hit.key, hit)) return;
     damage = hit.damage;
   } else {
-    const it = attackItem(d && d.w) || FIST_ITEM;
-    damage = it.kind === 'bow' && d.ch ? it.charged : it.damage;
+    damage = hitDamage(d);
+  }
+  if (chestKind(c) === 'silver' && !canHurtSilver(d)) {
+    if (attackerId === myPeerId) chestBlockedFx(c, d);
+    return;
   }
   c.hp = Math.max(0, c.hp - damage);
   chestHitFx(c, damage);
   if (c.hp <= 0) {
-    const msg = { id: c.id, by: attackerId, x: c.x, y: c.y };
+    const msg = { id: c.id, by: attackerId, x: c.x, y: c.y, k: chestKind(c) };
     onChestBreak(msg, myPeerId);
     if (sendChestBreak) {
       try { sendChestBreak(msg); } catch (e) { /* ignore */ }
@@ -1566,25 +2288,171 @@ function onChests(id, d) {
   for (const e of d.l) {
     if (!Array.isArray(e) || typeof e[0] !== 'string' || !Number.isFinite(e[1]) || !Number.isFinite(e[2])) continue;
     const prev = old.get(e[0]);
-    const c = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp: Math.max(0, Math.min(CHEST_HP, Number(e[3]) || 0)), flash: prev ? prev.flash : 0 };
+    const c = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp: 0, flash: prev ? prev.flash : 0 };
+    if (e[4] === 'wood' || e[4] === 'silver') c.k = e[4];
+    c.hp = Math.max(0, Math.min(chestMaxHp(c), Number(e[3]) || 0));
     if (prev && c.hp < prev.hp) chestHitFx(c, prev.hp - c.hp);
     chests.push(c);
   }
   chestsKnown = true;
+  const left = Number(d.b) || 0;
+  if (left > 0) {
+    if (!biomeOpen) openBiome(true, left);
+    else biomeCloseAt = performance.now() + left;
+  } else if (biomeOpen && performance.now() - biomeOpenedAt > 3000) {
+    // The grace period covers a host broadcast that was sent before it heard about an admin summon.
+    closeBiome();
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Purple biome events (rolled by the chest host)
+// ---------------------------------------------------------------------------
+let nextBiomeRoll = 0, nextStormRoll = 0;
+let storms = [];
+let biomeCloseAt = 0, biomeOpenedAt = 0;
+let skyFlash = 0;
+
+function openBiome(announce, durationMs = BIOME_DURATION * 1000) {
+  if (biomeOpen) return;
+  biomeOpen = true;
+  biomeOpenedAt = performance.now();
+  biomeCloseAt = biomeOpenedAt + durationMs;
+  nextStormRoll = 0;
+  solids.find(s => s.t === 'ceiling').y = BIOME_TOP - 16;
+  solids.push(...biomeSolids);
+  if (announce) {
+    showToast('A LOUD THUNDER STRIKES FROM ABOVE', GRASS[BIOME_SECTION].top);
+    skyFlash = 0.5;
+  }
+}
+
+function closeBiome() {
+  if (!biomeOpen) return;
+  biomeOpen = false;
+  solids.find(s => s.t === 'ceiling').y = -16;
+  for (const s of biomeSolids) {
+    const i = solids.indexOf(s);
+    if (i >= 0) solids.splice(i, 1);
+  }
+  chests = chests.filter(c => chestSection(c) < BIOME_SECTION);
+  storms = [];
+  chestsDirty = true;
+  // Anyone still up there drops onto a platform at the top of the red area.
+  if (state === 'game' && !me.dead && me.y < 40) {
+    const spots = solids.filter(s => s.t === P && s.y > 60 && s.y < 300 && s.w >= 40 &&
+      !overlaps(s.x + s.w / 2 - PLAYER_W / 2, s.y - PLAYER_H - 1, PLAYER_W, PLAYER_H));
+    const s = spots[Math.floor(Math.random() * spots.length)];
+    me.x = s.x + s.w / 2 - PLAYER_W / 2;
+    me.y = s.y - PLAYER_H - 1;
+    me.vx = me.vy = 0;
+    me.jetting = false;
+    me.dashT = 0;
+    broadcastState();
+  }
+  showToast('THE THUNDER BIOME FADED AWAY', GRASS[BIOME_SECTION].top);
+}
+
+function tickBiomeEvents(now) {
+  if (!nextBiomeRoll) nextBiomeRoll = now + BIOME_ROLL_INTERVAL * 1000;
+  if (!biomeOpen && now >= nextBiomeRoll) {
+    nextBiomeRoll = now + BIOME_ROLL_INTERVAL * 1000;
+    if (Math.random() < BIOME_CHANCE) {
+      openBiome(true);
+      chestsDirty = true;
+    }
+  }
+  if (!biomeOpen) return;
+  if (!nextStormRoll) nextStormRoll = now + STORM_ROLL_INTERVAL * 1000;
+  if (now >= nextStormRoll) {
+    nextStormRoll = now + STORM_ROLL_INTERVAL * 1000;
+    const hit = [];
+    BIOME_PLATS.forEach((s, i) => {
+      if (Math.random() < STORM_CHANCE) hit.push(i);
+    });
+    if (hit.length) {
+      hit.forEach(startStorm);
+      if (sendStorm) {
+        try { sendStorm({ l: hit }); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+}
+
+function onStorm(id, d) {
+  if (id !== chestHostId() || !d) return;
+  const list = (Array.isArray(d.l) ? d.l : [d.i]).filter(i => Number.isInteger(i) && i >= 0 && i < BIOME_PLATS.length);
+  if (!list.length) return;
+  openBiome(true);
+  list.forEach(startStorm);
+}
+
+function startStorm(i) {
+  storms.push({ plat: BIOME_PLATS[i], at: performance.now(), struck: false, bolt: null });
+}
+
+const stormZone = s => ({ x: s.plat.x, y: s.plat.y - STORM_CLOUD_H, w: s.plat.w, h: STORM_CLOUD_H });
+
+// Timed off the wall clock so a strike still lands while the tab is in the background.
+function tickStorms() {
+  const now = performance.now();
+  // Others wait a moment longer so the host's close message arrives before their own timer runs out.
+  if (biomeOpen && now >= biomeCloseAt + (isChestHost() ? 0 : 1500)) closeBiome();
+  for (const s of storms) {
+    if (s.struck || now - s.at < STORM_DELAY * 1000) continue;
+    s.struck = true;
+    const z = stormZone(s);
+    s.bolt = [];
+    for (let y = z.y + 8; y < s.plat.y; y += 8) s.bolt.push([z.x + z.w / 2 + Math.round((Math.random() - 0.5) * Math.min(24, z.w * 0.4)), y]);
+    s.bolt.push([z.x + z.w / 2, s.plat.y]);
+    emit(z.x + z.w / 2, s.plat.y, 24, '#fff6a0', 140, 0.5);
+    emit(z.x + z.w / 2, s.plat.y, 10, '#8ad8ff', 90, 0.4);
+    if (state === 'game' && me.y < 60) {
+      const onScreen = Math.abs(z.x + z.w / 2 - (cam.x + VIEW_W / 2)) < VIEW_W / 2 + 40 && Math.abs(s.plat.y - (cam.y + VIEW_H / 2)) < VIEW_H / 2 + 80;
+      skyFlash = Math.max(skyFlash, onScreen ? 0.45 : 0.2);
+    }
+    if (state === 'game' && !me.dead && immuneLeft() <= 0 && rectsOverlap(me.x, me.y, PLAYER_W, PLAYER_H, z.x, z.y, z.w, z.h)) {
+      hitByLightning();
+    }
+  }
+  storms = storms.filter(s => now - s.at < (STORM_DELAY + 0.7) * 1000);
+}
+
+function hitByLightning() {
+  me.hp = Math.max(0, me.hp - LIGHTNING_DAMAGE);
+  me.flash = HURT_FLASH;
+  me.stunUntil = performance.now() + STUN_TIME * 1000;
+  me.vx = 0;
+  me.jetting = false;
+  me.dashT = 0;
+  addDamageNumber(me.x, me.y, LIGHTNING_DAMAGE);
+  if (sendDamage) {
+    try { sendDamage({ a: LIGHTNING_DAMAGE, hp: me.hp }); } catch (e) { /* ignore */ }
+  }
+  if (me.hp <= 0) die('LIGHTNING');
+}
+
+const bushAt = (x, y) => (biomeOpen ? bushes.findIndex(b => x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) : -1);
+const myBush = () => (me.dead ? -1 : bushAt(me.x + PLAYER_W / 2, me.y + PLAYER_H - 4));
+// Someone hiding in a bush is only visible to players inside the same bush.
+const hiddenFromMe = r => r.bu >= 0 && r.bu !== myBush();
 
 function onChestBreak(d, fromId) {
   if (!d || typeof d.id !== 'string' || fromId !== chestHostId()) return;
   const c = chests.find(o => o.id === d.id);
   const x = c ? c.x : Number(d.x) || 0, y = c ? c.y : Number(d.y) || 0;
   chests = chests.filter(o => o.id !== d.id);
-  emit(x + CHEST_W / 2, y + CHEST_H / 2, 18, '#a8672f', 90, 0.6);
-  emit(x + CHEST_W / 2, y + CHEST_H / 2, 8, '#f2c14e', 70, 0.5);
-  if (d.by === myPeerId && state === 'game') grantChestReward();
+  const kind = c ? chestKind(c) : d.k === 'wood' || d.k === 'silver' ? d.k : chestKind({ y });
+  const silver = kind === 'silver';
+  emit(x + CHEST_W / 2, y + CHEST_H / 2, 18, silver ? '#c2c8d4' : '#a8672f', 90, 0.6);
+  emit(x + CHEST_W / 2, y + CHEST_H / 2, 8, silver ? '#4ae8f0' : '#f2c14e', 70, 0.5);
+  if (d.by !== myPeerId || state !== 'game') return;
+  grantChestReward(silver ? 'silver' : 'wood');
 }
 
 function updateChests(dt) {
   for (const c of chests) c.flash = Math.max(0, c.flash - dt);
+  skyFlash = Math.max(0, skyFlash - dt * 2.5);
   if (toast) {
     toast.life -= dt;
     if (toast.life <= 0) toast = null;
@@ -1593,9 +2461,12 @@ function updateChests(dt) {
 
 function die(killer) {
   me.dead = true;
+  me.beam = null;
+  me.jetting = false;
   me.killedBy = killer || '';
   pickerOpen = false;
   inventoryOpen = false;
+  closeAdmin();
   dragTarget = null;
   deathBurst(me.x, me.y, me.color);
   broadcastState();
@@ -1605,7 +2476,18 @@ function resetLife() {
   me.hp = me.maxHp;
   me.dashT = me.dashCd = 0;
   me.charging = false;
+  me.jetting = false;
+  me.jetFuel = JET_TIME;
+  me.jetEmpty = false;
+  me.stunUntil = 0;
+  me.ammo = SHURIKEN_AMMO;
+  me.burst = 0;
+  me.fuel = LASER_FUEL;
+  me.laserOut = 0;
+  me.beam = null;
   dashQueued = 0;
+  powerQueued = '';
+  burstQueued = jetQueued = false;
   me.dead = false;
   me.immuneUntil = performance.now() + SPAWN_IMMUNITY * 1000;
   me.flash = 0;
@@ -1629,7 +2511,7 @@ function leaveGame() {
   const leaving = room ? Promise.resolve(room.leave()).catch(() => {}) : Promise.resolve();
   room = null;
   sendState = sendHit = sendDamage = null;
-  sendChests = sendChestHit = sendChestBreak = sendArrow = null;
+  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = null;
   state = 'leaving';
   Promise.race([leaving, new Promise(r => setTimeout(r, 800))]).then(() => location.reload());
 }
@@ -1639,10 +2521,24 @@ function updateMe(dt) {
   me.punchT = Math.max(0, me.punchT - dt);
   me.punchCd = Math.max(0, me.punchCd - dt);
   me.dashCd = Math.max(0, me.dashCd - dt);
+  if (!me.jetting) {
+    me.jetFuel = Math.min(JET_TIME, me.jetFuel + dt * JET_TIME / JET_COOLDOWN);
+    if (me.jetFuel >= JET_TIME) me.jetEmpty = false;
+  }
+  if (performance.now() < me.stunUntil) {
+    dashQueued = 0;
+    if (powerKey() !== 'radar_blocker') powerQueued = '';
+  }
   if (dashQueued) {
     tryDash(dashQueued);
     dashQueued = 0;
   }
+  if (powerQueued) {
+    usePower(powerQueued);
+    powerQueued = '';
+  }
+  updateShuriken(dt);
+  updateLaser(dt);
   if (me.charging) {
     if (heldItem().kind === 'bow') me.chargeT += dt;
     else me.charging = false;
@@ -1655,9 +2551,12 @@ function updateMe(dt) {
   if (me.punchBuffer > 0) {
     if (me.punchCd <= 0) {
       me.punchBuffer = 0;
-      if (heldItem().kind === 'bow') {
+      const kind = heldItem().kind;
+      if (kind === 'bow') {
         if (!me.charging) fireArrow(false, me.attackSource === 'mouse');
-      } else {
+      } else if (kind === 'shuriken') {
+        shurikenAttack(me.attackSource === 'mouse');
+      } else if (kind !== 'laser') {
         doMelee();
       }
     } else {
@@ -1693,7 +2592,7 @@ function updateCamera(dt) {
   cam.x += (tx - cam.x) * k;
   cam.y += (ty - cam.y) * k;
   cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, cam.x));
-  cam.y = Math.max(0, Math.min(WORLD_H - VIEW_H, cam.y));
+  cam.y = Math.max(worldTop(), Math.min(WORLD_H - VIEW_H, cam.y));
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,22 +2663,24 @@ function hpColor(frac) {
   return frac > 0.5 ? '#6ad46a' : frac > 0.25 ? '#f2c14e' : '#e84a5f';
 }
 
-function drawNameAndHp(name, x, y, col, hp, maxHp) {
+function drawNameAndHp(name, x, y, col, hp, maxHp, hidden) {
   x = Math.round(x); y = Math.round(y);
   const frac = Math.max(0, Math.min(1, hp / maxHp));
+  if (hidden) ctx.globalAlpha = 0.15;
   drawText(ctx, name, x + PLAYER_W / 2, y - 12, 1, col, 'center', '#140c1c');
+  ctx.globalAlpha = 1;
   ctx.fillStyle = '#140c1c';
   ctx.fillRect(x - 2, y - 5, PLAYER_W + 4, 3);
   ctx.fillStyle = hpColor(frac);
   ctx.fillRect(x - 1, y - 4, Math.round((PLAYER_W + 2) * frac), 1);
 }
 
-function drawChargeBar(x, y, charge) {
+function drawChargeBar(x, y, charge, color) {
   if (charge < 0) return;
   x = Math.round(x); y = Math.round(y);
   ctx.fillStyle = '#140c1c';
   ctx.fillRect(x - 2, y + PLAYER_H + 2, PLAYER_W + 4, 3);
-  ctx.fillStyle = charge >= 1 ? (Math.floor(time * 12) % 2 ? '#ffd84a' : '#ffffff') : '#e8e8e8';
+  ctx.fillStyle = color || (charge >= 1 ? (Math.floor(time * 12) % 2 ? '#ffd84a' : '#ffffff') : '#e8e8e8');
   ctx.fillRect(x - 1, y + PLAYER_H + 3, Math.round((PLAYER_W + 2) * Math.min(1, charge)), 1);
 }
 
@@ -1815,10 +2716,30 @@ const ICONS = {
     '.......ooo..', '......obbo..', '.....obbo...', '....obbo....', '...obbbooo..', '..obbbbbbo..',
     '..ooobbbo...', '....obbo....', '...obbo.....', '..obbo......', '..obo.......', '..oo........',
   ],
+  shuriken: [
+    '.....o......', '....obo.....', '....obo.....', '....obo.....', '.oooohoooo..', 'obbbhshbbbo.',
+    '.oooohoooo..', '....obo.....', '....obo.....', '....obo.....', '.....o......', '............',
+  ],
+  pickaxe: [
+    '..ooooooo...', '.obbbbbbbo..', 'obboogoobbo.', 'obo.ogo..obo', 'oo..ogo...oo', '....ogo.....',
+    '....ogo.....', '....ogo.....', '....ogo.....', '....ogo.....', '....ogo.....', '.....o......',
+  ],
+  laser: [
+    '............', '............', '.oooooooooo.', 'obbbbbbbbrro', 'obhhhhhhbbbo', '.ooooobbbbo.',
+    '.....obgo...', '....obgo....', '....oggo....', '....oooo....', '............', '............',
+  ],
+  jetpack: [
+    '..oo....oo..', '.obbo..obbo.', '.ohbo..ohbo.', '.ohboooohbo.', '.ohbgggghbo.', '.ohbgggghbo.',
+    '.obboooobbo.', '.obbo..obbo.', '..oo....oo..', '..ff....ff..', '...f....f...', '............',
+  ],
+  radar: [
+    '...oooooo...', '..obbbbbbo..', '.obbbbbbrro.', 'obbbbbbrrbbo', 'obbbbbrrbbbo', 'obbsbrrbbbbo',
+    'obbbrrbbbbbo', 'obbrrbbbbbbo', 'obrrbbbbbbo.', '.orrbbbbbbo.', '..obbbbbbo..', '...oooooo...',
+  ],
 };
 function drawItemIcon(it, x, y) {
-  const map = ICONS[it.style || it.kind];
-  const pal = { o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8' };
+  const map = ICONS[it.icon || it.style || it.kind];
+  const pal = { o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8', r: '#ff4a4a', f: '#ff9a3d' };
   for (let r = 0; r < 12; r++) {
     for (let c = 0; c < 12; c++) {
       const ch = map[r][c];
@@ -1829,10 +2750,13 @@ function drawItemIcon(it, x, y) {
   }
 }
 function itemDescription(it) {
+  if (it.chestDamage) return it.chestDamage + ' DMG TO CHESTS ONLY';
   if (it.kind === 'melee') return it.damage + ' DMG';
   if (it.kind === 'bow') return it.damage + ' DMG / ' + it.charged + ' CHARGED';
+  if (it.kind === 'shuriken') return it.damage + ' DMG X5 / RIGHT CLICK: X' + SHURIKEN_BURST_COUNT;
+  if (it.kind === 'laser') return LASER_DPS + ' DMG/S / RIGHT CLICK: REFUEL';
   if (it.hp) return '+' + it.hp + ' MAX HP';
-  if (it.kind === 'power') return 'Q / MIDDLE CLICK / DOUBLE TAP';
+  if (it.kind === 'power') return POWER_HELP[Object.keys(ITEMS).find(k => ITEMS[k] === it)] || '';
   return '';
 }
 
@@ -1880,6 +2804,11 @@ function drawPicker() {
 }
 
 function drawHud() {
+  if (biomeOpen && !pickerOpen) {
+    const left = Math.max(0, Math.ceil((biomeCloseAt - performance.now()) / 1000));
+    const label = 'THUNDER BIOME ' + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+    drawText(ctx, label, VIEW_W / 2, 22, 1, left <= 10 && left % 2 ? '#ffffff' : GRASS[BIOME_SECTION].top, 'center', '#140c1c');
+  }
   // Status panel
   ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
   ctx.fillRect(4, 4, 112, 46);
@@ -1917,19 +2846,45 @@ function drawHud() {
   // Held weapon + dash
   const it = heldItem();
   const label = it.name;
-  const hw = Math.max(72, textWidth(label, 1) + 22);
+  const hw = Math.max(82, textWidth(label, 1) + 32);
   ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
   ctx.fillRect(VIEW_W - 4 - hw, 20, hw, 16);
-  if (it !== FIST_ITEM) drawItemIcon(it, VIEW_W - 4 - hw + 2, 22);
-  drawText(ctx, label, VIEW_W - 8, 26, 1, '#ffffff', 'right');
-  if (hasDash()) {
+  drawText(ctx, activeHand === 'hand' ? '1' : '2', VIEW_W - 4 - hw + 3, 26, 1, '#ffe66d');
+  if (it !== FIST_ITEM) drawItemIcon(it, VIEW_W - 4 - hw + 12, 22);
+  drawText(ctx, label, VIEW_W - 8, 26, 1, it === FIST_ITEM ? '#ffffff' : rarityOf(it).text, 'right');
+  let rowY = 38;
+  const statusRow = (label, frac, color, text) => {
     ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
-    ctx.fillRect(VIEW_W - 76, 38, 72, 14);
-    drawText(ctx, 'DASH', VIEW_W - 70, 42, 1, '#ffffff');
+    ctx.fillRect(VIEW_W - 110, rowY, 106, 14);
+    drawText(ctx, label, VIEW_W - 104, rowY + 4, 1, '#ffffff');
     ctx.fillStyle = '#140c1c';
-    ctx.fillRect(VIEW_W - 40, 42, 33, 5);
-    ctx.fillStyle = me.dashCd > 0 ? '#3a8a80' : ITEMS.dash.color;
-    ctx.fillRect(VIEW_W - 39, 43, Math.round(31 * (1 - me.dashCd / DASH_COOLDOWN)), 3);
+    ctx.fillRect(VIEW_W - 50, rowY + 4, 43, 5);
+    ctx.fillStyle = color;
+    ctx.fillRect(VIEW_W - 49, rowY + 5, Math.round(41 * Math.max(0, Math.min(1, frac))), 3);
+    if (text) drawText(ctx, text, VIEW_W - 52, rowY + 4, 1, color, 'right');
+    rowY += 16;
+  };
+  if (it.kind === 'laser') {
+    const out = me.laserOut > 0;
+    statusRow('FUEL', out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / LASER_FUEL,
+      out ? '#7a3a3a' : me.refueling && me.fuel < LASER_FUEL ? '#ffe66d' : '#ff5a4a',
+      out ? Math.ceil(me.laserOut) + 'S' : me.fuel.toFixed(1));
+  } else if (it.kind === 'shuriken') {
+    const reloading = me.ammo === 0 && me.burst === 0;
+    statusRow('AMMO', reloading ? 1 - me.punchCd / SHURIKEN_BURST_COOLDOWN : me.ammo / SHURIKEN_AMMO,
+      reloading ? '#5a6070' : it.color, reloading ? '' : String(me.ammo));
+  }
+  const pk = powerKey();
+  if (pk === 'dash') {
+    statusRow('DASH', 1 - me.dashCd / DASH_COOLDOWN, me.dashCd > 0 ? '#3a8a80' : ITEMS.dash.color);
+  } else if (pk === 'jetpack') {
+    statusRow('JETPACK', me.jetFuel / JET_TIME,
+      me.jetting ? '#ff9a3d' : me.jetEmpty ? '#7a3a3a' : '#ff5a4a');
+  } else if (pk === 'radar_blocker') {
+    const now = performance.now();
+    if (radarActive()) statusRow('HIDDEN', (me.radarUntil - now) / (RADAR_TIME * 1000), '#7a8ad8', Math.ceil((me.radarUntil - now) / 1000) + 'S');
+    else if (now < me.radarCdUntil) statusRow('RADAR', 1 - (me.radarCdUntil - now) / (RADAR_COOLDOWN * 1000), '#3a3f5a', Math.ceil((me.radarCdUntil - now) / 1000) + 'S');
+    else statusRow('RADAR', 1, '#7a8ad8');
   }
 
   const immune = immuneLeft();
@@ -1966,12 +2921,14 @@ function drawPlayerArrows(cx, cy) {
   const EDGE = 11;
   const hw = VIEW_W / 2, hh = VIEW_H / 2;
   for (const r of remotes.values()) {
-    if (r.dead) continue;
+    if (r.dead || r.rb) continue;
     const sx = r.x - cx, sy = r.y - cy;
     if (sx + PLAYER_W > 0 && sx < VIEW_W && sy + PLAYER_H > 0 && sy < VIEW_H) continue;
     const dx = sx + PLAYER_W / 2 - hw, dy = sy + PLAYER_H / 2 - hh;
     const t = Math.min((hw - EDGE) / Math.abs(dx || 1e-6), (hh - EDGE) / Math.abs(dy || 1e-6));
+    if (hiddenFromMe(r)) ctx.globalAlpha = 0.2;
     drawArrow(Math.round(hw + dx * t), Math.round(hh + dy * t), Math.atan2(dy, dx), r.c);
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -1990,19 +2947,21 @@ function drawChests(cx, cy) {
   for (const c of chests) {
     const sx = Math.round(c.x - cx), sy = Math.round(c.y - cy);
     if (sx < -CHEST_W || sx > VIEW_W || sy < -CHEST_H - 6 || sy > VIEW_H) continue;
+    const pal = chestKind(c) === 'silver' ? SILVER_PAL : CHEST_PAL;
+    const maxHp = chestMaxHp(c);
     for (let r = 0; r < CHEST_H; r++) {
       for (let col = 0; col < CHEST_W; col++) {
         const ch = CHEST_SPRITE[r][col];
         if (ch === '.') continue;
-        ctx.fillStyle = c.flash > 0 && ch !== 'o' ? '#ffffff' : CHEST_PAL[ch];
+        ctx.fillStyle = c.flash > 0 && ch !== 'o' ? '#ffffff' : pal[ch];
         ctx.fillRect(sx + col, sy + r, 1, 1);
       }
     }
-    if (c.hp < CHEST_HP) {
+    if (c.hp < maxHp) {
       ctx.fillStyle = '#140c1c';
       ctx.fillRect(sx - 1, sy - 5, CHEST_W + 2, 3);
-      ctx.fillStyle = hpColor(c.hp / CHEST_HP);
-      ctx.fillRect(sx, sy - 4, Math.round(CHEST_W * c.hp / CHEST_HP), 1);
+      ctx.fillStyle = hpColor(c.hp / maxHp);
+      ctx.fillRect(sx, sy - 4, Math.round(CHEST_W * c.hp / maxHp), 1);
     }
   }
 }
@@ -2025,40 +2984,179 @@ function drawInventory() {
     ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
     const item = inventory[i];
     if (item) {
+      const it = ITEMS[item.key];
       const isEquipped = EQUIP_SLOTS.some(slot => equipped[slot] === item);
-      if (isEquipped) {
-        ctx.fillStyle = '#ffe66d';
-        ctx.fillRect(s.x, s.y, s.w, s.h);
-        ctx.fillStyle = '#3a2f1a';
-        ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
-      }
-      drawItemIcon(ITEMS[item.key], s.x + 2, s.y + 2);
+      ctx.fillStyle = isEquipped ? '#ffe66d' : isOver ? '#ffffff' : shade(rarityOf(it).bg, 0.35);
+      ctx.fillRect(s.x, s.y, s.w, s.h);
+      ctx.fillStyle = rarityOf(it).bg;
+      ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+      drawItemIcon(it, s.x + 2, s.y + 2);
+      if (item.marked) drawDeleteMark(s.x, s.y, s.w);
       if (isOver) hovered = item;
     }
   }
   // Equipment column
   EQUIP_SLOTS.forEach((slot, i) => {
     const s = equipSlotRect(i);
-    drawText(ctx, slot.toUpperCase(), s.x + s.w / 2, s.y - 8, 1, '#b9a8e0', 'center');
-    ctx.fillStyle = over(s) && equipped[slot] ? '#ffe66d' : '#5a4a7a';
+    const active = slot === activeHand;
+    drawText(ctx, EQUIP_LABELS[slot], s.x + s.w / 2, s.y - 8, 1, active ? '#ffe66d' : '#b9a8e0', 'center');
+    ctx.fillStyle = over(s) && equipped[slot] ? '#ffffff' : active ? '#ffe66d' : '#5a4a7a';
     ctx.fillRect(s.x, s.y, s.w, s.h);
-    ctx.fillStyle = '#1a1226';
+    ctx.fillStyle = equipped[slot] ? rarityOf(ITEMS[equipped[slot].key]).bg : '#1a1226';
     ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
     if (equipped[slot]) {
       drawItemIcon(ITEMS[equipped[slot].key], s.x + 5, s.y + 5);
       if (over(s)) hovered = equipped[slot];
     }
   });
-  drawText(ctx, 'CLICK ITEM: EQUIP / UNEQUIP   E: CLOSE', VIEW_W / 2, p.y + p.h + 4, 1, '#8a7aaf', 'center', '#140c1c');
+  drawText(ctx, 'CLICK: EQUIP   RIGHT CLICK: MARK X   1/2/SCROLL: SWAP WEAPON', VIEW_W / 2, p.y + p.h + 4, 1, '#8a7aaf', 'center', '#140c1c');
+
+  // Delete button (bottom-right corner of the screen)
+  const marked = inventory.filter(i => i.marked).length;
+  const db = DELETE_BTN;
+  const dHover = over(db) && marked > 0;
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(db.x - 1, db.y - 1, db.w + 2, db.h + 2);
+  ctx.fillStyle = marked ? (dHover ? '#ff6a6a' : '#c8383c') : '#4a3a4a';
+  ctx.fillRect(db.x, db.y, db.w, db.h);
+  drawDeleteMark(db.x + 1, db.y + 1, db.w - 2, marked ? '#ffffff' : '#7a6a7a');
+  drawText(ctx, marked ? 'DELETE ' + marked : 'RIGHT CLICK ITEMS TO MARK', db.x - 4, db.y + 7, 1,
+    marked ? '#ff8a8a' : '#8a7aaf', 'right', '#140c1c');
+
   if (hovered) {
     const it = ITEMS[hovered.key];
+    const rar = rarityOf(it);
     const desc = itemDescription(it);
-    const w = Math.max(textWidth(it.name, 1), textWidth(desc, 1)) + 6;
-    const tx = Math.max(2, Math.min(VIEW_W - w - 2, mouse.x + 6)), ty = mouse.y - 20;
+    const w = Math.max(textWidth(it.name, 1), textWidth(desc, 1), textWidth(rar.label, 1)) + 6;
+    const tx = Math.max(2, Math.min(VIEW_W - w - 2, mouse.x + 6)), ty = mouse.y - 28;
     ctx.fillStyle = '#140c1c';
-    ctx.fillRect(tx, ty, w, 19);
-    drawText(ctx, it.name, tx + 3, ty + 3, 1, it.color);
-    drawText(ctx, desc, tx + 3, ty + 11, 1, '#ffffff');
+    ctx.fillRect(tx, ty, w, 27);
+    ctx.fillStyle = rar.bg;
+    ctx.fillRect(tx, ty, 2, 27);
+    drawText(ctx, it.name, tx + 4, ty + 3, 1, rar.text);
+    drawText(ctx, rar.label, tx + 4, ty + 11, 1, shade(rar.text, -0.2));
+    drawText(ctx, desc, tx + 4, ty + 19, 1, '#ffffff');
+  }
+}
+
+function drawAdminPanel() {
+  const p = ADMIN_PANEL;
+  ctx.fillStyle = '#c8383c';
+  ctx.fillRect(p.x - 1, p.y - 1, p.w + 2, p.h + 2);
+  ctx.fillStyle = '#241a33';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  drawText(ctx, 'ADMIN PANEL', p.x + 6, p.y + 6, 1, '#ff8a8a');
+  drawText(ctx, 'TAB: CLOSE', p.x + p.w - 6, p.y + 6, 1, '#8a7aaf', 'right');
+
+  if (!adminUnlocked()) {
+    drawText(ctx, 'ENTER PASSWORD', p.x + p.w / 2, p.y + 60, 2, '#ffe66d', 'center', '#140c1c');
+    const box = { x: p.x + 50, y: p.y + 88, w: p.w - 100, h: 22 };
+    ctx.fillStyle = adminPassError > 0 ? '#ff3b3b' : '#ffe66d';
+    ctx.fillRect(box.x, box.y, box.w, box.h);
+    ctx.fillStyle = '#1a1226';
+    ctx.fillRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
+    const caret = Math.floor(time * 2) % 2 === 0 ? '-' : '';
+    drawText(ctx, '*'.repeat(adminPass.length) + caret, box.x + box.w / 2, box.y + 7, 2, '#ffffff', 'center');
+    if (adminPassError > 0) drawText(ctx, 'WRONG PASSWORD', p.x + p.w / 2, p.y + 120, 1, '#ff6a6a', 'center');
+    drawText(ctx, 'TYPE THE PASSWORD AND PRESS ENTER', p.x + p.w / 2, p.y + 150, 1, '#b9a8e0', 'center');
+    drawText(ctx, 'YOU ONLY NEED TO DO THIS ONCE', p.x + p.w / 2, p.y + 162, 1, '#8a7aaf', 'center');
+    return;
+  }
+  ADMIN_TABS.forEach((t, i) => {
+    const r = adminTabRect(i), active = adminTab === t.id;
+    ctx.fillStyle = active ? '#ffe66d' : over(r) ? '#7a6a9a' : '#5a4a7a';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = active ? '#4a3a6a' : '#3a2f4a';
+    ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    drawText(ctx, t.label, r.x + r.w / 2, r.y + 5, 1, active ? '#ffe66d' : '#b9a8e0', 'center');
+  });
+
+  if (adminTab === 'teleport') {
+    drawText(ctx, 'CHOOSE A BIOME', p.x + p.w / 2, p.y + 40, 1, '#b9a8e0', 'center');
+    const here = sectionOf(me.y + PLAYER_H);
+    tpLayers().forEach((layer, i) => {
+      const r = tpBtnRect(i), g = GRASS[layer - 1];
+      const isHere = layer === 1 ? here <= 1 : layer === 6 ? here >= BIOME_SECTION : here === layer - 1;
+      ctx.fillStyle = over(r) ? '#ffffff' : '#140c1c';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.fillStyle = g.dark;
+      ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+      ctx.fillStyle = g.top;
+      ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, 4);
+      drawText(ctx, layerName(layer), r.x + r.w / 2, r.y + 9, 2, '#ffffff', 'center', '#140c1c');
+      if (isHere) drawText(ctx, 'HERE', r.x + r.w - 5, r.y + r.h - 8, 1, '#ffe66d', 'right', '#140c1c');
+    });
+    return;
+  }
+
+  // Search box
+  const sb = ADMIN_SEARCH, sbtn = ADMIN_SEARCH_BTN;
+  ctx.fillStyle = adminSearchFocus ? '#ffe66d' : over(sb) ? '#7a6a9a' : '#5a4a7a';
+  ctx.fillRect(sb.x, sb.y, sb.w, sb.h);
+  ctx.fillStyle = '#1a1226';
+  ctx.fillRect(sb.x + 1, sb.y + 1, sb.w - 2, sb.h - 2);
+  if (adminSearch || adminSearchFocus) {
+    const caret = adminSearchFocus && Math.floor(time * 2) % 2 === 0 ? '-' : '';
+    drawText(ctx, adminSearch + caret, sb.x + 4, sb.y + 5, 1, '#ffffff');
+  } else {
+    drawText(ctx, 'CLICK TO TYPE...', sb.x + 4, sb.y + 5, 1, '#5a4a7a');
+  }
+  ctx.fillStyle = over(sbtn) || adminSearchFocus ? '#ffe66d' : '#b9a8e0';
+  ctx.fillRect(sbtn.x, sbtn.y, sbtn.w, sbtn.h);
+  drawText(ctx, 'SEARCH', sbtn.x + sbtn.w / 2, sbtn.y + 5, 1, '#241a33', 'center');
+
+  // Scrollable item list
+  const l = ADMIN_LIST;
+  ctx.fillStyle = '#1a1226';
+  ctx.fillRect(l.x, l.y, l.w, l.h);
+  const { rows, height } = adminRows();
+  const hoverRow = adminRowAtMouse();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(l.x, l.y, l.w, l.h);
+  ctx.clip();
+  for (const row of rows) {
+    const y = l.y + row.y - adminScroll;
+    if (y + row.h < l.y || y > l.y + l.h) continue;
+    if (row.header) {
+      drawText(ctx, row.header, l.x + 4, y + 5, 1, '#ffe66d');
+      ctx.fillStyle = '#5a4a7a';
+      ctx.fillRect(l.x + 8 + textWidth(row.header, 1), y + 7, l.w - 18 - textWidth(row.header, 1), 1);
+      continue;
+    }
+    const it = ITEMS[row.key], rar = rarityOf(it);
+    if (row === hoverRow) {
+      ctx.fillStyle = '#3a2f4a';
+      ctx.fillRect(l.x, y, l.w, row.h);
+    }
+    ctx.fillStyle = rar.bg;
+    ctx.fillRect(l.x + 4, y + 1, 16, 16);
+    drawItemIcon(it, l.x + 6, y + 3);
+    drawText(ctx, it.name, l.x + 26, y + 6, 1, rar.text);
+    drawText(ctx, row === hoverRow ? '+ ADD' : rar.label, l.x + l.w - 10, y + 6, 1,
+      row === hoverRow ? '#ffe66d' : shade(rar.text, -0.25), 'right');
+  }
+  if (!rows.length) drawText(ctx, 'NO ITEMS FOUND', l.x + l.w / 2, l.y + 20, 1, '#8a7aaf', 'center');
+  ctx.restore();
+  if (height > l.h) {
+    const barH = Math.max(12, l.h * l.h / height);
+    const barY = l.y + (l.h - barH) * (adminScroll / (height - l.h));
+    ctx.fillStyle = '#3a2f4a';
+    ctx.fillRect(l.x + l.w - 4, l.y, 3, l.h);
+    ctx.fillStyle = '#b9a8e0';
+    ctx.fillRect(l.x + l.w - 4, Math.round(barY), 3, Math.round(barH));
+  }
+  drawText(ctx, 'CLICK AN ITEM TO ADD IT   SCROLL FOR MORE', VIEW_W / 2, p.y + p.h + 4, 1, '#8a7aaf', 'center', '#140c1c');
+}
+
+function drawDeleteMark(x, y, size, color = '#ff3b3b') {
+  for (let i = 2; i < size - 2; i++) {
+    for (const [px, py] of [[x + i, y + i], [x + size - 1 - i, y + i]]) {
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(px - 1, py, 3, 1);
+      ctx.fillStyle = color;
+      ctx.fillRect(px, py, 1, 1);
+    }
   }
 }
 
@@ -2068,34 +3166,143 @@ function drawToast() {
   const w = textWidth(toast.text, 1) + 10;
   ctx.fillStyle = 'rgba(20, 12, 28, 0.8)';
   ctx.fillRect(Math.round(VIEW_W / 2 - w / 2), VIEW_H - 34, w, 13);
-  drawText(ctx, toast.text, VIEW_W / 2, VIEW_H - 30, 1, '#ffe66d', 'center');
+  drawText(ctx, toast.text, VIEW_W / 2, VIEW_H - 30, 1, toast.color, 'center');
   ctx.globalAlpha = 1;
+}
+
+// Draws the part of a world-space image (whose top edge sits at world y = top) that is in view.
+function drawWorldImage(img, top, cx, cy) {
+  const sy = Math.max(0, cy - top), ey = Math.min(img.height, cy + VIEW_H - top);
+  if (ey <= sy) return;
+  ctx.drawImage(img, cx, sy, VIEW_W, ey - sy, 0, top + sy - cy, VIEW_W, ey - sy);
+}
+
+function drawBushes(cx, cy) {
+  if (!biomeOpen) return;
+  const mine = myBush();
+  bushes.forEach((b, i) => {
+    const sx = b.x - cx, sy = b.y - cy;
+    if (sx < -b.w || sx > VIEW_W || sy < -b.h || sy > VIEW_H) return;
+    ctx.globalAlpha = i === mine ? 0.55 : 1;
+    ctx.drawImage(b.img, sx, sy);
+  });
+  ctx.globalAlpha = 1;
+}
+
+const CLOUD_ROWS = [
+  '....oooo..ooo.....',
+  '..oogggooogggoo...',
+  '.ogggdgggggggdgoo.',
+  'ogggddggggdddgggo.',
+  'oggdddddddddddggo',
+  '.oddddddddddddddo.',
+  '..oooooooooooooo..',
+];
+function drawStorms(cx, cy, front) {
+  const now = performance.now();
+  for (const s of storms) {
+    const z = stormZone(s), age = (now - s.at) / 1000;
+    const sx = Math.round(z.x - cx), sy = Math.round(z.y - cy);
+    if (sx > VIEW_W || sx + z.w < 0 || sy > VIEW_H || sy + z.h + 8 < 0) continue;
+    if (!front) {
+      // Warning glow on the platform while the cloud charges up.
+      if (!s.struck && Math.floor(age * 8) % 2 === 0) {
+        ctx.fillStyle = 'rgba(255, 246, 160, 0.18)';
+        ctx.fillRect(sx, sy, z.w, z.h);
+      }
+      continue;
+    }
+    const fade = s.struck ? Math.max(0, 1 - (age - STORM_DELAY) / 0.7) : Math.min(1, age * 4);
+    ctx.globalAlpha = fade;
+    const scale = 2, cw = 18 * scale, n = Math.max(1, Math.round(z.w / (cw - 8)));
+    for (let k = 0; k < n; k++) {
+      const ox = sx + Math.round((z.w - cw) * (n === 1 ? 0.5 : k / (n - 1))), oy = sy - 6 + (k % 2) * 3;
+      CLOUD_ROWS.forEach((row, ry) => {
+        for (let rx = 0; rx < row.length; rx++) {
+          const ch = row[rx];
+          if (ch === '.') continue;
+          ctx.fillStyle = ch === 'o' ? '#1c1a26' : ch === 'g' ? (s.struck ? '#6a6878' : '#4a4858') : '#33313f';
+          ctx.fillRect(ox + rx * scale, oy + ry * scale, scale, scale);
+        }
+      });
+    }
+    if (!s.struck && Math.random() < 0.35) {
+      ctx.fillStyle = '#fff6a0';
+      ctx.fillRect(sx + Math.random() * z.w, sy - 2 + Math.random() * 8, 2, 2);
+    }
+    if (s.bolt && age - STORM_DELAY < 0.4) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(255, 255, 220, 0.3)';
+      ctx.fillRect(sx, sy, z.w, z.h);
+      // Flickers off for a frame now and then, like real lightning.
+      if (Math.floor((age - STORM_DELAY) * 30) % 4 !== 2) {
+        let [px, py] = [z.x + z.w / 2, z.y + 8];
+        for (const [bx, by] of s.bolt) {
+          drawLine(px - cx, py - cy, bx - cx, by - cy, 'rgba(138, 216, 255, 0.6)', 9);
+          drawLine(px - cx, py - cy, bx - cx, by - cy, '#fff6a0', 5);
+          drawLine(px - cx, py - cy, bx - cx, by - cy, '#ffffff', 2);
+          px = bx; py = by;
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawLine(x0, y0, x1, y1, color, width) {
+  ctx.fillStyle = color;
+  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+  for (let i = 0; i <= steps; i++) {
+    const x = Math.round(x0 + (x1 - x0) * i / steps), y = Math.round(y0 + (y1 - y0) * i / steps);
+    ctx.fillRect(x - (width >> 1), y, width, 1);
+  }
 }
 
 function drawGame() {
   const cx = Math.round(cam.x), cy = Math.round(cam.y);
   drawBackground(ctx, cx, cy);
-  ctx.drawImage(levelCanvas, cx, cy, VIEW_W, VIEW_H, 0, 0, VIEW_W, VIEW_H);
+  drawWorldImage(levelCanvas, 0, cx, cy);
+  if (biomeOpen) drawWorldImage(biomeCanvas, BIOME_TOP, cx, cy);
   drawChests(cx, cy);
+  drawStorms(cx, cy, false);
 
   for (const r of remotes.values()) {
-    if (r.dead) continue;
+    if (r.dead || hiddenFromMe(r)) continue;
     const rch = r.ch >= 0 ? r.ch / 10 : -1;
     drawPlayer(ctx, r.x - cx, r.y - cy, r.c, r.f, r.a, time, playerFx(r.c, r.flash, r.immune, r.punchT, r.w, r.ar, rch));
-    drawNameAndHp(r.n, r.x - cx, r.y - cy, '#ffffff', r.hp, r.maxHp || BASE_HP);
+    drawNameAndHp(r.n, r.x - cx, r.y - cy, '#ffffff', r.hp, r.maxHp || BASE_HP, r.rb);
     drawChargeBar(r.x - cx, r.y - cy, rch);
+    if (r.lz) drawBeam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], cx, cy);
   }
   if (!me.dead) {
     const mch = me.charging ? me.chargeT / BOW_CHARGE_TIME : -1;
     const fx = playerFx(me.color, me.flash, immuneLeft() > 0, me.punchT,
-      equipped.hand ? equipped.hand.key : '', (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0), mch);
+      heldKey(), (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0), mch);
+    const inBush = myBush() >= 0;
+    if (inBush) ctx.globalAlpha = 0.6;
     drawPlayer(ctx, me.x - cx, me.y - cy, me.color, me.facing, me.anim, time, fx);
-    drawNameAndHp(me.name, me.x - cx, me.y - cy, '#ffe66d', me.hp, me.maxHp);
-    drawChargeBar(me.x - cx, me.y - cy, mch);
+    ctx.globalAlpha = 1;
+    drawNameAndHp(me.name, me.x - cx, me.y - cy, '#ffe66d', me.hp, me.maxHp, radarActive() || inBush);
+    if (performance.now() < me.stunUntil && Math.random() < 0.5) {
+      emit(me.x + Math.random() * PLAYER_W, me.y + Math.random() * PLAYER_H, 1, Math.random() < 0.5 ? '#fff6a0' : '#8ad8ff', 30, 0.2);
+    }
+    if (heldItem().kind === 'laser') {
+      const out = me.laserOut > 0;
+      drawChargeBar(me.x - cx, me.y - cy, out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / LASER_FUEL, out ? '#7a3a3a' : '#ff5a4a');
+    } else {
+      drawChargeBar(me.x - cx, me.y - cy, mch);
+    }
+    if (me.beam) drawBeam(me.beam.x1, me.beam.y1, me.beam.x2, me.beam.y2, cx, cy);
   }
+  drawBushes(cx, cy);
+  drawStorms(cx, cy, true);
   drawArrows(cx, cy);
   drawParticles(ctx, cx, cy);
   drawDamageNumbers(cx, cy);
+  if (skyFlash > 0) {
+    ctx.fillStyle = `rgba(255, 252, 230, ${Math.min(0.6, skyFlash)})`;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
 
   if (me.dead) {
     drawDeathScreen();
@@ -2103,6 +3310,7 @@ function drawGame() {
     drawHud();
     drawPlayerArrows(cx, cy);
     if (inventoryOpen) drawInventory();
+    if (adminOpen) drawAdminPanel();
     drawToast();
   }
 }
