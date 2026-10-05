@@ -327,12 +327,13 @@ const GRASS = [
   { main: '#4fb53e', top: '#86e05c', dark: '#3a8f2e', tip: '#b6f08a' },
   { main: '#4fb53e', top: '#86e05c', dark: '#3a8f2e', tip: '#b6f08a' },
   { main: '#2c7330', top: '#46914a', dark: '#1d5222', tip: '#5fae5c' },
-  { main: '#2cc4c8', top: '#7cf0ec', dark: '#1b8c96', tip: '#c2fffa' },
+  { main: '#e4f4fa', top: '#ffffff', dark: '#a8d4e6', tip: '#ffffff' },
   { main: '#c8383c', top: '#f0665e', dark: '#8c2228', tip: '#ffaea2' },
   { main: '#9a4ad8', top: '#c88af0', dark: '#6a2a9a', tip: '#e8c0ff' },
   { main: '#9a4ad8', top: '#c88af0', dark: '#6a2a9a', tip: '#e8c0ff' },
 ];
-const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#46aab4', '#b84c4c', '#8a4ac8', '#8a4ac8'];
+const SNOW_SECTION = 3;
+const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#e8f6ff', '#b84c4c', '#8a4ac8', '#8a4ac8'];
 
 function drawDirtBlock(g, s, rnd, grass) {
   g.fillStyle = '#6b4a2f';
@@ -367,8 +368,20 @@ function drawDirtBlock(g, s, rnd, grass) {
   for (let x = s.x + 1; x < s.x + s.w - 1; x++) if (rnd() < 0.08) g.fillRect(x, s.y - 1, 1, 1);
 }
 
-function drawBrickWall(g, s, rnd, tint, moss) {
-  const t = c => (tint ? mix(c, tint, 0.14) : c);
+function drawSnowCap(g, s, rnd) {
+  for (let x = s.x; x < s.x + s.w; x++) {
+    g.fillStyle = '#ffffff';
+    g.fillRect(x, s.y, 1, 2);
+    if (rnd() < 0.5) g.fillRect(x, s.y - 1, 1, 1);
+    if (rnd() < 0.12) {
+      g.fillStyle = '#d4eef8';
+      g.fillRect(x, s.y + 2, 1, 1 + Math.floor(rnd() * 3));
+    }
+  }
+}
+
+function drawBrickWall(g, s, rnd, tint, moss, amount = 0.14) {
+  const t = c => (tint ? mix(c, tint, amount) : c);
   g.fillStyle = t('#3c4250');
   g.fillRect(s.x, s.y, s.w, s.h);
   const bricks = [t('#5b6475'), t('#636d80'), t('#555d6d')];
@@ -405,8 +418,10 @@ const [levelCanvas, lg] = makeCanvas(WORLD_W, WORLD_H);
   for (const s of solids) {
     if (s.t === 'ceiling') continue;
     const sec = sectionOf(s.y + s.h / 2);
-    if (s.t === W || s.t === 'border') drawBrickWall(lg, s, rnd, WALL_TINT[sec], GRASS[sec].dark);
+    const snowy = sec === SNOW_SECTION;
+    if (s.t === W || s.t === 'border') drawBrickWall(lg, s, rnd, WALL_TINT[sec], GRASS[sec].dark, snowy ? 0.55 : 0.14);
     else drawDirtBlock(lg, s, rnd, GRASS[sec]);
+    if (snowy && s.t !== 'border') drawSnowCap(lg, s, rnd);
   }
 })();
 
@@ -603,6 +618,26 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
       for (let c = 7; c <= 13; c++) px(c, -1, c === 7 || c === 13 ? dark : head);
       px(8, 0, head); px(12, 0, head);
     }
+  } else if (it.style === 'gauntlet') {
+    const x0 = attacking ? 10 : 8, w = attacking ? 5 : 3;
+    for (let r = 5; r <= 8; r++) {
+      for (let c = x0; c < x0 + w; c++) px(c, r, r === 5 ? shade(it.color, 0.35) : r === 8 ? shade(it.color, -0.35) : it.color);
+    }
+    px(x0 + w - 1, 6, '#ffffff');
+  } else if (it.style === 'hammer') {
+    const light = shade(it.color, 0.3), dark = shade(it.color, -0.35);
+    if (attacking) {
+      const end = 5 + it.range;
+      for (let c = 15; c < end - 2; c++) px(c, 6, hilt);
+      for (let r = 1; r <= 11; r++) {
+        for (let c = end - 2; c <= end + 1; c++) px(c, r, r === 1 ? light : r === 11 ? dark : it.color);
+      }
+    } else {
+      for (let r = 0; r <= 9; r++) px(10, r, hilt);
+      for (let r = -4; r <= 0; r++) {
+        for (let c = 6; c <= 14; c++) px(c, r, r === -4 ? light : r === 0 ? dark : it.color);
+      }
+    }
   } else if (it.kind === 'shuriken') {
     if (!attacking) {
       for (const [c, r] of [[11, 5], [10, 6], [12, 6], [11, 7]]) px(c, r, it.color);
@@ -757,6 +792,13 @@ const STORM_DELAY = 1;
 const STORM_CLOUD_H = 80;
 const LIGHTNING_DAMAGE = 50;
 const STUN_TIME = 1;
+// Freeze Power only works inside the snow biome.
+const FREEZE_AIR_JUMPS = 3;
+const FREEZE_DAMAGE_MULT = 1.5;
+const FREEZE_HP = 100;
+const FROZEN_CHANCE = 0.05;
+const FROZEN_CHANCE_SNOW = 0.1;
+const FROZEN_TIME = 1;
 
 function overlaps(x, y, w, h) {
   for (const s of solids) {
@@ -783,7 +825,7 @@ const me = {
   dashT: 0, dashDir: 1, dashCd: 0, charging: false, chargeT: 0,
   ammo: SHURIKEN_AMMO, burst: 0, burstT: 0, lastThrow: 0,
   fuel: LASER_FUEL, laserOut: 0, laserTick: 0, beam: null, refueling: false,
-  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, radarUntil: 0, radarCdUntil: 0,
+  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, frozenUntil: 0, boosted: false, radarUntil: 0, radarCdUntil: 0,
 };
 const radarActive = () => performance.now() < me.radarUntil;
 const picker = hexToHsv(me.color);
@@ -1073,12 +1115,13 @@ function stepPlayer(p, dt) {
 
   if (p.onGround) {
     p.coyote = COYOTE;
-    p.airJumps = 1;
+    p.airJumps = maxAirJumps();
   } else {
     p.coyote -= dt;
   }
-  // Touching a wall refreshes the air jump.
-  if (p.wallDir) p.airJumps = 1;
+  // Touching a wall refreshes the air jumps.
+  if (p.wallDir) p.airJumps = maxAirJumps();
+  p.airJumps = Math.min(p.airJumps, maxAirJumps());
 
   // Horizontal movement
   if (p.lock > 0) p.lock -= dt;
@@ -1154,10 +1197,10 @@ function stepPlayer(p, dt) {
       p.facing = -p.wallDir;
       p.lock = WALL_JUMP_LOCK;
       p.jumpBuffer = 0;
-      p.airJumps = 1;
+      p.airJumps = maxAirJumps();
       emit(p.x + (p.wallDir > 0 ? PLAYER_W : 0), p.y + PLAYER_H / 2, 8, '#ffffff', 70, 0.35);
     } else if (p.airJumps > 0) {
-      p.airJumps = 0;
+      p.airJumps--;
       p.vy = -AIR_JUMP_V;
       p.jumpBuffer = 0;
       p.airJumpCount++;
@@ -1269,7 +1312,7 @@ const remotes = new Map();
 let netStatus = 'OFFLINE';
 let room = null;
 let sendState = null, sendHit = null, sendDamage = null;
-let sendChests = null, sendChestHit = null, sendChestBreak = null, sendArrow = null, sendStorm = null, sendBiome = null;
+let sendChests = null, sendChestHit = null, sendChestBreak = null, sendArrow = null, sendStorm = null, sendBiome = null, sendAdmin = null;
 let myPeerId = 'local';
 
 function packState() {
@@ -1282,6 +1325,7 @@ function packState() {
     w: heldKey(), ar: (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0),
     ch: me.charging ? Math.round(Math.min(1, me.chargeT / BOW_CHARGE_TIME) * 10) : -1,
     rb: radarActive() ? 1 : 0, jt: me.jetting ? 1 : 0, bu: myBush(),
+    pw: powerKey(), fr: performance.now() < me.frozenUntil ? 1 : 0,
     lz: me.beam ? [Math.round(me.beam.x2), Math.round(me.beam.y2)] : 0,
   };
 }
@@ -1317,6 +1361,8 @@ function onRemote(id, d) {
   r.ch = Number.isFinite(d.ch) ? d.ch : -1;
   r.rb = !!d.rb;
   r.jt = !!d.jt;
+  r.pw = typeof d.pw === 'string' && ITEMS[d.pw] ? d.pw : '';
+  r.fr = !!d.fr;
   r.bu = Number.isInteger(d.bu) && d.bu >= 0 && d.bu < bushes.length ? d.bu : -1;
   r.lz = Array.isArray(d.lz) && Number.isFinite(d.lz[0]) && Number.isFinite(d.lz[1]) ? [d.lz[0], d.lz[1]] : null;
   r.tx = d.x; r.ty = d.y;
@@ -1338,17 +1384,17 @@ function validateHit(d, ax, ay, tx, ty, slackX, forChest) {
   const damage = itemDamage(it, d, forChest);
   // max hits per window (ms); generous enough for network bunching.
   if (it.kind === 'bow' || it.kind === 'shuriken') {
-    if (Math.hypot(ax - tx, ay - ty) > ARROW_SPEED * ARROW_LIFE + 80) return null;
+    if (Math.hypot(ax - tx, ay - ty) > (it.speed || ARROW_SPEED) * ARROW_LIFE + 80) return null;
     return it.kind === 'bow'
-      ? { damage, max: 1, window: it.cooldown * 700, key: 'bow' }
-      : { damage, max: SHURIKEN_BURST_COUNT, window: SHURIKEN_RELOAD * 900, key: 'shuriken' };
+      ? { damage, item: it, max: 1, window: it.cooldown * 700, key: 'bow' }
+      : { damage, item: it, max: SHURIKEN_BURST_COUNT, window: SHURIKEN_RELOAD * 900, key: 'shuriken' };
   }
   if (it.kind === 'laser') {
     if (Math.hypot(ax - tx, ay - ty) > LASER_RANGE + 60) return null;
-    return { damage, max: Math.round(1 / LASER_TICK) + 1, window: 1000, key: 'laser' };
+    return { damage, item: it, max: Math.round(1 / LASER_TICK) + 1, window: 1000, key: 'laser' };
   }
   if (Math.abs(ax - tx) > it.range + slackX || Math.abs(ay - ty) > 32) return null;
-  return { damage, max: 1, window: PUNCH_COOLDOWN * 700, key: 'melee' };
+  return { damage, item: it, max: 1, window: (it.cooldown || PUNCH_COOLDOWN) * 700, key: it.cooldown ? 'melee_' + d.w : 'melee' };
 }
 
 function allowHit(r, key, hit) {
@@ -1367,13 +1413,32 @@ function onHit(id, d) {
   const hit = validateHit(d, r.tx, r.ty, me.x, me.y, 28, false);
   if (!hit || hit.damage <= 0 || !allowHit(r, 'hits_' + hit.key, hit)) return;
 
-  me.hp = Math.max(0, me.hp - hit.damage);
+  const inSnow = sectionOf(r.ty + PLAYER_H) === SNOW_SECTION;
+  const damage = d.fz && remoteBoosted(r) ? Math.round(hit.damage * FREEZE_DAMAGE_MULT) : hit.damage;
+  me.hp = Math.max(0, me.hp - damage);
   me.flash = HURT_FLASH;
-  addDamageNumber(me.x, me.y, hit.damage);
+  addDamageNumber(me.x, me.y, damage);
   if (sendDamage) {
-    try { sendDamage({ a: hit.damage, hp: me.hp }); } catch (e) { /* ignore */ }
+    try { sendDamage({ a: damage, hp: me.hp }); } catch (e) { /* ignore */ }
   }
-  if (me.hp <= 0) die(r.n);
+  if (me.hp <= 0) {
+    die(r.n);
+    return;
+  }
+  if (hit.item.freeze && Math.random() < (inSnow ? FROZEN_CHANCE_SNOW : FROZEN_CHANCE)) freezeMe();
+}
+
+function freezeMe() {
+  const until = performance.now() + FROZEN_TIME * 1000;
+  me.frozenUntil = until;
+  me.stunUntil = Math.max(me.stunUntil, until);
+  me.vx = 0;
+  me.jetting = false;
+  me.dashT = 0;
+  me.charging = false;
+  emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 14, '#d8f6ff', 50, 0.5);
+  showToast('YOU ARE FROZEN!', '#b4ecfa');
+  broadcastState();
 }
 
 function onDamage(id, d) {
@@ -1402,6 +1467,9 @@ async function startNet() {
     const stormAction = room.makeAction('storm');
     sendStorm = d => stormAction.send(d);
     stormAction.onMessage = (d, ctx) => onStorm(ctx.peerId, d);
+    const adminAction = room.makeAction('admin');
+    sendAdmin = (d, target) => adminAction.send(d, target ? { target } : undefined);
+    adminAction.onMessage = (d, ctx) => onAdminMsg(ctx.peerId, d);
     const biomeAction = room.makeAction('biome');
     sendBiome = d => biomeAction.send(d);
     biomeAction.onMessage = d => {
@@ -1457,6 +1525,7 @@ setInterval(() => {
   tickRegen();
   tickChests();
   tickStorms();
+  tickTracker();
   broadcastState();
 }, 66);
 
@@ -1466,7 +1535,7 @@ function updateRemotes(dt) {
     if (now - r.last > 10000) { remotes.delete(id); continue; }
     r.flash = Math.max(0, r.flash - dt);
     r.punchT = Math.max(0, r.punchT - dt);
-    if (now - r.last > 500) { r.ch = -1; r.lz = null; r.jt = false; }
+    if (now - r.last > 500) { r.ch = -1; r.lz = null; r.jt = false; r.fr = false; }
     if (r.jt && !r.dead && !hiddenFromMe(r) && Math.random() < 0.7) {
       particles.push({ x: r.x + PLAYER_W / 2 - r.f * 4, y: r.y + PLAYER_H - 4, vx: (Math.random() - 0.5) * 20, vy: 60 + Math.random() * 40,
         life: 0.3, max: 0.3, color: Math.random() < 0.5 ? '#ff9a3d' : '#ffe66d', g: 0 });
@@ -1484,7 +1553,7 @@ function updateRemotes(dt) {
 // Combat
 // ---------------------------------------------------------------------------
 function hitChest(c, msg) {
-  if (chestKind(c) === 'silver' && !canHurtSilver(msg)) {
+  if (!canHurtChest(chestKind(c), msg)) {
     chestBlockedFx(c, msg);
     return;
   }
@@ -1495,10 +1564,13 @@ function hitChest(c, msg) {
   }
 }
 
+// fz asks the victim for the Freeze Power bonus; the victim checks it against our state.
+const attackMsg = () => (freezeBoosted() ? { w: heldKey() || 'punch', fz: 1 } : { w: heldKey() || 'punch' });
+
 function doMelee() {
   const it = heldItem();
-  const msg = { w: heldKey() || 'punch' };
-  me.punchCd = PUNCH_COOLDOWN;
+  const msg = attackMsg();
+  me.punchCd = it.cooldown || PUNCH_COOLDOWN;
   me.punchT = PUNCH_TIME;
   me.punchCount++;
   const reach = PLAYER_W / 2 + it.range;
@@ -1510,7 +1582,7 @@ function doMelee() {
     }
   }
   for (const c of [...chests]) {
-    if (rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, CHEST_W, CHEST_H)) hitChest(c, msg);
+    if (rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, chestW(c), chestH(c))) hitChest(c, msg);
   }
   broadcastState();
 }
@@ -1539,9 +1611,10 @@ function fireArrow(charged, aimAtMouse) {
   if (it.kind === 'bow') me.punchCd = it.cooldown;
   me.punchT = PUNCH_TIME;
   me.punchCount++;
+  const speed = it.speed || ARROW_SPEED;
   const a = {
-    x: sx, y: sy, vx: dx * ARROW_SPEED, vy: dy * ARROW_SPEED, life: ARROW_LIFE,
-    mine: true, owner: myPeerId, w: heldKey(), ch: charged ? 1 : 0,
+    x: sx, y: sy, vx: dx * speed, vy: dy * speed, life: ARROW_LIFE,
+    mine: true, owner: myPeerId, w: heldKey(), ch: charged ? 1 : 0, fz: freezeBoosted() ? 1 : 0,
   };
   arrows.push(a);
   if (charged) emit(sx, sy, 10, '#ffd84a', 60, 0.3);
@@ -1555,7 +1628,7 @@ function fireArrow(charged, aimAtMouse) {
 
 function onRemoteArrow(id, d) {
   if (!d || ![d.x, d.y, d.vx, d.vy].every(Number.isFinite) || !ITEMS[d.w]) return;
-  if (Math.hypot(d.vx, d.vy) > ARROW_SPEED * 1.5 || arrows.length > 200) return;
+  if (Math.hypot(d.vx, d.vy) > (ITEMS[d.w].speed || ARROW_SPEED) * 1.5 || arrows.length > 200) return;
   arrows.push({ x: d.x, y: d.y, vx: d.vx, vy: d.vy, life: ARROW_LIFE, mine: false, owner: id, w: d.w, ch: d.ch ? 1 : 0 });
 }
 
@@ -1580,14 +1653,14 @@ function updateArrows(dt) {
       for (const [id, r] of remotes) {
         if (r.dead || id === a.owner || !arrowHitsPlayer(a, r.x, r.y)) continue;
         if (a.mine && sendHit) {
-          try { sendHit({ w: a.w, ch: a.ch }, id); } catch (e) { /* peer gone */ }
+          try { sendHit(a.fz ? { w: a.w, ch: a.ch, fz: 1 } : { w: a.w, ch: a.ch }, id); } catch (e) { /* peer gone */ }
         }
         gone = true;
         break;
       }
       if (!gone && !a.mine && !me.dead && state === 'game' && arrowHitsPlayer(a, me.x, me.y)) gone = true;
       if (!gone && a.mine) {
-        const c = chests.find(o => a.x >= o.x && a.x < o.x + CHEST_W && a.y >= o.y && a.y < o.y + CHEST_H);
+        const c = chests.find(o => a.x >= o.x && a.x < o.x + chestW(o) && a.y >= o.y && a.y < o.y + chestH(o));
         if (c) {
           hitChest(c, { w: a.w, ch: a.ch });
           gone = true;
@@ -1615,7 +1688,7 @@ function drawArrows(cx, cy) {
     }
     const sp = Math.hypot(a.vx, a.vy) || 1;
     const ux = a.vx / sp, uy = a.vy / sp;
-    const shaft = a.ch ? '#ffd84a' : a.w === 'gold_bow' ? '#f2c14e' : '#c89a5a';
+    const shaft = a.ch ? '#ffd84a' : a.w === 'gold_bow' ? '#f2c14e' : a.w === 'diamond_bow' ? '#6ae8f0' : '#c89a5a';
     for (let t = 0; t <= 7; t++) {
       ctx.fillStyle = t === 0 ? '#e8e8f0' : t >= 6 ? '#ffffff' : shaft;
       ctx.fillRect(Math.round(a.x - ux * t - cx), Math.round(a.y - uy * t - cy), 1, 1);
@@ -1686,7 +1759,7 @@ function castBeam(sx, sy, dx, dy) {
     for (const [id, r] of remotes) {
       if (!r.dead && arrowHitsPlayer({ x, y }, r.x, r.y)) return { x2: x, y2: y, peer: id };
     }
-    const c = chests.find(o => x >= o.x && x < o.x + CHEST_W && y >= o.y && y < o.y + CHEST_H);
+    const c = chests.find(o => x >= o.x && x < o.x + chestW(o) && y >= o.y && y < o.y + chestH(o));
     if (c) return { x2: x, y2: y, chest: c };
   }
   return { x2: x, y2: y };
@@ -1712,7 +1785,7 @@ function updateLaser(dt) {
   me.laserTick -= dt;
   if (me.laserTick <= 0) {
     me.laserTick += LASER_TICK;
-    const msg = { w: heldKey() };
+    const msg = attackMsg();
     if (hit.peer && sendHit) {
       try { sendHit(msg, hit.peer); } catch (e) { /* peer gone */ }
     } else if (hit.chest) {
@@ -1773,6 +1846,8 @@ const RARITY = {
   uncommon: { label: 'UNCOMMON', bg: '#2c5e30', text: '#6ad46a' },
   rare: { label: 'RARE', bg: '#28487e', text: '#5ab4ff' },
   epic: { label: 'EPIC', bg: '#55287e', text: '#c47cff' },
+  legendary: { label: 'LEGENDARY', bg: '#7a5214', text: '#ffc83a' },
+  mythic: { label: 'MYTHIC', bg: '#7a1e3c', text: '#ff6a8a' },
 };
 const rarityOf = it => RARITY[it.rarity] || RARITY.common;
 const ITEMS = {
@@ -1792,12 +1867,22 @@ const ITEMS = {
   radar_blocker: { name: 'RADAR BLOCKER', kind: 'power', icon: 'radar', color: '#5a6a9a', rarity: 'epic' },
   jetpack: { name: 'JETPACK POWER', kind: 'power', icon: 'jetpack', color: '#c8383c', rarity: 'epic' },
   laser_gun: { name: 'LASER GUN', kind: 'laser', icon: 'laser', damage: Math.round(LASER_DPS * LASER_TICK), silverOk: true, color: '#6a7a8a', rarity: 'epic' },
+  diamond_sword: { name: 'DIAMOND SWORD', kind: 'melee', style: 'sword', damage: 16, range: SWORD_RANGE, color: '#6ae8f0', rarity: 'epic' },
+  freeze_power: { name: 'FREEZE POWER', kind: 'power', icon: 'freeze', color: '#8ad8ff', rarity: 'epic' },
+  frozen_blade: { name: 'FROZEN BLADE', kind: 'melee', style: 'sword', damage: 14, range: SWORD_RANGE, freeze: true, color: '#9ad0ff', rarity: 'epic' },
+  diamond_bow: { name: 'DIAMOND BOW', kind: 'bow', damage: 15, charged: 30, cooldown: 0.3, speed: 700, color: '#6ae8f0', rarity: 'legendary' },
+  ice_gauntlet: { name: 'ICE GAUNTLET', kind: 'melee', style: 'gauntlet', damage: 8, range: PUNCH_RANGE, cooldown: 0.15, color: '#b4ecfa', rarity: 'legendary' },
+  diamond_katana: { name: 'DIAMOND KATANA', kind: 'melee', style: 'katana', damage: 16, range: KATANA_RANGE, color: '#6ae8f0', rarity: 'legendary' },
+  heavy_hammer: { name: 'HEAVY HAMMER', kind: 'melee', style: 'hammer', damage: 40, range: KATANA_RANGE, cooldown: 5, color: '#8a8a98', rarity: 'mythic' },
 };
 // Drop chances are "1 in N" each; they are used as relative weights.
 const DROP_TABLES = {
   wood: { wood_sword: 2, leather_helmet: 4, leather_boots: 5, stone_sword: 7, wood_katana: 10, bow: 15, iron_sword: 20, stone_katana: 23, dash: 25, gold_bow: 30 },
   silver: { bow: 2, dash: 5, shuriken: 9, stone_pickaxe: 13, iron_katana: 18, radar_blocker: 20, jetpack: 25, laser_gun: 30 },
+  stone: { stone_pickaxe: 3, iron_katana: 5, jetpack: 8, diamond_sword: 13, freeze_power: 15, frozen_blade: 20, diamond_bow: 25, ice_gauntlet: 30, diamond_katana: 40, heavy_hammer: 50 },
 };
+// Ice chests borrow the stone table until they get their own.
+DROP_TABLES.ice = DROP_TABLES.stone;
 function rollChestItem(kind = 'wood') {
   const table = DROP_TABLES[kind];
   const total = Object.values(table).reduce((a, n) => a + 1 / n, 0);
@@ -1826,12 +1911,24 @@ const itemDamage = (it, msg, forChest) => {
   return it.kind === 'bow' && msg && msg.ch ? it.charged : it.damage;
 };
 const hasDash = () => powerKey() === 'dash';
+const freezeBoosted = () => powerKey() === 'freeze_power' && !me.dead && sectionOf(me.y + PLAYER_H) === SNOW_SECTION;
+const maxAirJumps = () => (freezeBoosted() ? FREEZE_AIR_JUMPS : 1);
+const remoteBoosted = r => r.pw === 'freeze_power' && sectionOf(r.ty + PLAYER_H) === SNOW_SECTION;
 
-// Armor raises max HP and current HP by the same amount, so swapping it can't heal.
+// Armor (and the freeze bonus) raise max HP and current HP by the same amount,
+// so swapping gear or walking in and out of the snow can't heal.
 function updateMaxHp() {
   const old = me.maxHp;
-  me.maxHp = BASE_HP + (equipped.head ? ITEMS[equipped.head.key].hp : 0) + (equipped.feet ? ITEMS[equipped.feet.key].hp : 0);
-  me.hp = Math.max(1, Math.min(me.maxHp, me.hp + me.maxHp - old));
+  me.maxHp = BASE_HP + (equipped.head ? ITEMS[equipped.head.key].hp : 0) + (equipped.feet ? ITEMS[equipped.feet.key].hp : 0) +
+    (me.boosted ? FREEZE_HP : 0);
+  if (!me.dead) me.hp = Math.max(1, Math.min(me.maxHp, me.hp + me.maxHp - old));
+}
+function syncFreezeBoost() {
+  const b = freezeBoosted();
+  if (b === me.boosted) return;
+  me.boosted = b;
+  updateMaxHp();
+  if (b) emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 12, ITEMS.freeze_power.color, 60, 0.5);
 }
 
 // Weapons go into the selected weapon slot if it's free, otherwise the other
@@ -1892,16 +1989,32 @@ const POWER_HELP = {
   dash: 'Q / MIDDLE CLICK / DOUBLE TAP',
   jetpack: 'MIDDLE CLICK / HOLD JUMP',
   radar_blocker: 'Q / MIDDLE CLICK',
+  freeze_power: 'STRONGER IN THE SNOW BIOME',
 };
 
-function grantChestReward(kind = 'wood') {
+// adminBreak: from the admin's Break All Chests. A full inventory then drops its
+// oldest unequipped items to make room, and the toast counts the haul instead.
+const adminLoot = { n: 0, at: 0 };
+function grantChestReward(kind = 'wood', adminBreak = false) {
   if (inventory.length >= INVENTORY_SIZE) {
-    showToast('INVENTORY FULL');
-    return;
+    const i = adminBreak ? inventory.findIndex(item => !EQUIP_SLOTS.some(s => equipped[s] === item)) : -1;
+    if (i < 0) {
+      showToast('INVENTORY FULL');
+      return;
+    }
+    inventory.splice(i, 1);
   }
   const key = rollChestItem(kind);
   const it = ITEMS[key];
   addItem(key);
+  if (adminBreak) {
+    const now = performance.now();
+    if (now - adminLoot.at > 2000) adminLoot.n = 0;
+    adminLoot.n++;
+    adminLoot.at = now;
+    showToast('BROKE ALL CHESTS: GOT ' + adminLoot.n + (adminLoot.n === 1 ? ' ITEM' : ' ITEMS'), '#ffe66d');
+    return;
+  }
   showToast('GOT ' + it.name + '!' + (POWER_HELP[key] ? ' ' + POWER_HELP[key] : ''), rarityOf(it).text);
 }
 
@@ -1943,8 +2056,20 @@ let adminSearch = '';
 let adminSearchFocus = false;
 let adminScroll = 0;
 const ADMIN_PANEL = { x: VIEW_W / 2 - 130, y: 26, w: 260, h: 200 };
-const ADMIN_TABS = [{ id: 'teleport', label: 'TELEPORT' }, { id: 'inventory', label: 'INVENTORY' }];
-const adminTabRect = i => ({ x: ADMIN_PANEL.x + 6 + i * 86, y: ADMIN_PANEL.y + 17, w: 82, h: 14 });
+const ADMIN_TABS = [{ id: 'teleport', label: 'TELEPORT' }, { id: 'inventory', label: 'INVENTORY' }, { id: 'events', label: 'EVENTS' }];
+const adminTabRect = i => ({ x: ADMIN_PANEL.x + 6 + i * 84, y: ADMIN_PANEL.y + 17, w: 80, h: 14 });
+const ADMIN_EVENTS = [
+  { id: 'ice', label: 'SPAWN ICE CHESTS' },
+  { id: 'biome', label: 'SUMMON THUNDER BIOME' },
+  { id: 'kill', label: 'KILL ALL' },
+  { id: 'break', label: 'BREAK ALL CHESTS' },
+  { id: 'thunder', label: 'SUMMON THUNDER X1' },
+  { id: 'tracker', label: 'THUNDER TRACKER' },
+];
+const eventBtnRect = i => ({ x: ADMIN_PANEL.x + 20, y: ADMIN_PANEL.y + 40 + i * 26, w: ADMIN_PANEL.w - 40, h: 22 });
+const TRACKER_DOUBLE_CLICK = 400;
+let adminIceCount = 0;
+let trackerRepeat = false, trackerNext = 0, lastTrackerClick = 0;
 // Layer 2 is the second half of the layer 1 biome, so it isn't a separate stop.
 // Layer 6 is the thunder biome; teleporting there summons it if it hasn't appeared yet.
 const tpLayers = () => [1, 3, 4, 5, 6];
@@ -2032,6 +2157,12 @@ function adminClick() {
     });
     return;
   }
+  if (adminTab === 'events') {
+    ADMIN_EVENTS.forEach((ev, i) => {
+      if (over(eventBtnRect(i))) adminEvent(ev.id);
+    });
+    return;
+  }
   if (over(ADMIN_SEARCH) || over(ADMIN_SEARCH_BTN)) {
     adminSearchFocus = true;
     return;
@@ -2085,6 +2216,150 @@ function adminTeleport(layer) {
   if (!summoned) showToast('TELEPORTED TO ' + layerName(layer), GRASS[sec].top);
 }
 
+function summonBiome() {
+  if (biomeOpen) return false;
+  openBiome(true);
+  chestsDirty = true;
+  if (sendBiome) {
+    try { sendBiome({ open: 1 }); } catch (e) { /* ignore */ }
+  }
+  return true;
+}
+
+// Chest changes run on the chest host; anyone else asks the host to do them.
+function adminToHost(d) {
+  if (isChestHost()) hostAdmin(myPeerId, d);
+  else if (sendAdmin) {
+    try { sendAdmin(d, chestHostId()); } catch (e) { /* host gone */ }
+  }
+}
+
+function adminEvent(id) {
+  if (!isAdmin() || !adminUnlocked()) return;
+  if (id === 'ice') {
+    adminIceCount++;
+    adminToHost({ ice: adminIceCount });
+    showToast('SPAWNING ' + adminIceCount + (adminIceCount === 1 ? ' ICE CHEST' : ' ICE CHESTS'), '#b4ecfa');
+  } else if (id === 'biome') {
+    if (summonBiome()) showToast('THUNDER BIOME SUMMONED', GRASS[BIOME_SECTION].top);
+    else showToast('THE THUNDER BIOME IS ALREADY HERE', GRASS[BIOME_SECTION].top);
+  } else if (id === 'kill') {
+    const alive = [...remotes.values()].filter(r => !r.dead).length;
+    if (sendAdmin) {
+      try { sendAdmin({ kill: 1 }); } catch (e) { /* ignore */ }
+    }
+    showToast('KILLED ' + alive + (alive === 1 ? ' PLAYER' : ' PLAYERS'), '#ff6a6a');
+  } else if (id === 'break') {
+    adminToHost({ breakAll: 1 });
+  } else if (id === 'thunder') {
+    adminStorms([stormRectAt(me.x + PLAYER_W / 2, me.y + PLAYER_H)]);
+  } else if (id === 'tracker') {
+    const now = performance.now();
+    if (trackerRepeat) {
+      trackerRepeat = false;
+      showToast('THUNDER TRACKER OFF', '#fff6a0');
+    } else if (now - lastTrackerClick < TRACKER_DOUBLE_CLICK) {
+      trackerRepeat = true;
+      trackerNext = now + 1000;
+      showToast('THUNDER TRACKER ON: EVERY SECOND', '#fff6a0');
+    } else {
+      thunderTracker();
+    }
+    lastTrackerClick = now;
+  }
+}
+
+// Strikes the surface under (or nearest to) a point, capped so the ground doesn't light up end to end.
+const ADMIN_STORM_MAX_W = 120;
+function stormRectAt(px, feet) {
+  let best = null, bestScore = Infinity;
+  for (const s of solids) {
+    if (s.t !== P && s.t !== 'ground') continue;
+    const dx = px < s.x ? s.x - px : px > s.x + s.w ? px - s.x - s.w : 0;
+    const dy = s.y >= feet - 4 ? s.y - feet : 200 + feet - s.y;
+    const score = dx * 2 + dy;
+    if (score < bestScore) { bestScore = score; best = s; }
+  }
+  if (!best) return null;
+  const w = Math.min(best.w, ADMIN_STORM_MAX_W);
+  const x = Math.max(best.x, Math.min(best.x + best.w - w, px - w / 2));
+  return [Math.round(x), best.y, w];
+}
+
+function thunderTracker() {
+  const rects = [];
+  for (const r of remotes.values()) {
+    if (r.dead) continue;
+    const rect = stormRectAt(r.tx + PLAYER_W / 2, r.ty + PLAYER_H);
+    if (rect) rects.push(rect);
+  }
+  adminStorms(rects);
+  if (!trackerRepeat) showToast(rects.length ? 'THUNDER SENT TO ' + rects.length + (rects.length === 1 ? ' PLAYER' : ' PLAYERS') : 'NO PLAYERS TO TRACK', '#fff6a0');
+}
+
+function tickTracker() {
+  if (!trackerRepeat) return;
+  if (state !== 'game' || !isAdmin()) { trackerRepeat = false; return; }
+  const now = performance.now();
+  if (now < trackerNext) return;
+  trackerNext = now + 1000;
+  thunderTracker();
+}
+
+function adminStorms(rects) {
+  rects = rects.filter(Boolean);
+  if (!rects.length) return;
+  for (const r of rects) startStormRect(r, myPeerId);
+  if (sendStorm) {
+    try { sendStorm({ r: rects }); } catch (e) { /* ignore */ }
+  }
+}
+
+function onAdminMsg(id, d) {
+  const r = remotes.get(id);
+  if (!d || !r || !r.n.includes('LARP')) return;
+  if (d.kill) {
+    if (state !== 'game' || me.dead) return;
+    me.hp = 0;
+    if (sendDamage) {
+      try { sendDamage({ a: me.maxHp, hp: 0 }); } catch (e) { /* ignore */ }
+    }
+    die(r.n);
+    return;
+  }
+  if (isChestHost()) hostAdmin(id, d);
+}
+
+function hostAdmin(by, d) {
+  if (d.breakAll) breakAllChests(by);
+  if (d.ice) spawnIceChests(Math.max(1, Math.min(30, d.ice | 0)));
+}
+
+function breakAllChests(by) {
+  for (const c of [...chests]) {
+    const msg = { id: c.id, by, x: c.x, y: c.y, k: chestKind(c), a: 1 };
+    onChestBreak(msg, myPeerId);
+    if (sendChestBreak) {
+      try { sendChestBreak(msg); } catch (e) { /* ignore */ }
+    }
+  }
+  chestsDirty = true;
+}
+
+function spawnIceChests(n) {
+  let made = 0;
+  for (let i = 0; i < n; i++) {
+    const spot = randomChestSpot(SNOW_SECTION, CHEST_KINDS.ice.w, CHEST_KINDS.ice.h);
+    if (!spot) break;
+    chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'ice', hp: CHEST_KINDS.ice.hp, flash: 0 });
+    made++;
+  }
+  if (made) {
+    announceIceChest();
+    broadcastChests();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Chests
 // ---------------------------------------------------------------------------
@@ -2108,28 +2383,46 @@ const CHEST_SPRITE = [
 ];
 const CHEST_PAL = { o: '#2a1608', h: '#d29a5a', w: '#a8672f', d: '#7a4520', m: '#6a6a78', y: '#f2c14e' };
 const SILVER_PAL = { o: '#1a1c28', h: '#f4f7fc', w: '#c2c8d4', d: '#868ea0', m: '#4e5466', y: '#4ae8f0' };
+const STONE_PAL = { o: '#1e1e26', h: '#b4b4be', w: '#8a8a96', d: '#5c5c68', m: '#f2c14e', y: '#fff3a0' };
+const ICE_PAL = { o: '#1a4a6a', h: '#f4ffff', w: '#b4ecfa', d: '#78c4e2', m: '#e2fbff', y: '#4ae8f0' };
 // Silver chests are tougher, and only hits stronger than a stone sword can damage them.
 const SILVER_CHEST_HP = 100;
 const SILVER_MIN_DAMAGE = ITEMS.stone_sword.damage + 1;
+// minDamage: hits below it do nothing (silverOk items skip the silver check).
+// needsItem: only that exact item can damage the chest.
+const CHEST_KINDS = {
+  wood: { hp: CHEST_HP, pal: CHEST_PAL, fx: ['#a8672f', '#f2c14e'] },
+  silver: { hp: SILVER_CHEST_HP, pal: SILVER_PAL, fx: ['#c2c8d4', '#4ae8f0'], minDamage: SILVER_MIN_DAMAGE, silverOk: true },
+  stone: { hp: 300, pal: STONE_PAL, fx: ['#8a8a96', '#f2c14e'], minDamage: 21 },
+  ice: { hp: 1000, pal: ICE_PAL, fx: ['#d8f6ff', '#4ae8f0'], needsItem: 'frozen_pickaxe', w: 20, h: 16 },
+};
+const isChestKind = k => Object.prototype.hasOwnProperty.call(CHEST_KINDS, k);
 // How many of each chest kind every map section keeps (section 0 is the bottom).
 const CHEST_MIX = [
-  { wood: 5, silver: 0 },
+  { wood: 5 },
   { wood: 3, silver: 2 },
-  { wood: 0, silver: 5 },
-  { wood: 0, silver: 5 },
-  { wood: 0, silver: 5 },
+  { silver: 5 },
+  { stone: 5 },
+  { stone: 5 },
 ];
-const chestKind = c => c.k || (sectionOf(c.y + CHEST_H) >= 2 ? 'silver' : 'wood');
-const chestMaxHp = c => (chestKind(c) === 'silver' ? SILVER_CHEST_HP : CHEST_HP);
+const ICE_ROLL_INTERVAL = 60;
+const ICE_CHANCE = 0.2;
+const chestKind = c => (isChestKind(c.k) ? c.k : sectionOf(c.y + CHEST_H) >= 2 ? 'silver' : 'wood');
+const chestMaxHp = c => CHEST_KINDS[chestKind(c)].hp;
+const chestW = c => CHEST_KINDS[chestKind(c)].w || CHEST_W;
+const chestH = c => CHEST_KINDS[chestKind(c)].h || CHEST_H;
 const hitDamage = msg => itemDamage(attackItem(msg && msg.w) || FIST_ITEM, msg, true);
-const canHurtSilver = msg => {
+function canHurtChest(kind, msg) {
+  const rule = CHEST_KINDS[kind];
+  if (rule.needsItem) return !!msg && msg.w === rule.needsItem;
+  if (!rule.minDamage) return true;
   const it = attackItem(msg && msg.w) || FIST_ITEM;
-  return !!it.silverOk || itemDamage(it, msg, true) >= SILVER_MIN_DAMAGE;
-};
+  return (rule.silverOk && !!it.silverOk) || itemDamage(it, msg, true) >= rule.minDamage;
+}
 const CHEST_SURFACES = solids.filter(s => (s.t === P || s.t === 'ground') && s.w >= CHEST_W + 8);
-const chestSection = c => sectionOf(c.y + CHEST_H);
+const chestSection = c => sectionOf(c.y + chestH(c));
 // The purple biome has 11 fixed chest spots, split over its two sections.
-const BIOME_CHEST_MIX = { wood: 3, silver: 3 };
+const BIOME_CHEST_MIX = { wood: 3, silver: 3, stone: 2 };
 const BIOME_CHEST_SPOTS = (() => {
   const rnd = mulberry32(778);
   const spots = [];
@@ -2148,6 +2441,7 @@ let chestsKnown = false;
 let chestsDirty = false;
 let lastChestBroadcast = 0;
 let joinedPerf = 0;
+let nextIceRoll = 0;
 
 function chestHostId() {
   let best = myPeerId, bestT = me.joinedAt;
@@ -2162,8 +2456,8 @@ function chestHostId() {
 }
 const isChestHost = () => chestHostId() === myPeerId;
 
-function randomChestSpot(section) {
-  const surfaces = CHEST_SURFACES.filter(s => sectionOf(s.y) === section);
+function randomChestSpot(section, w = CHEST_W, h = CHEST_H) {
+  const surfaces = CHEST_SURFACES.filter(s => sectionOf(s.y) === section && s.w >= w + 8);
   if (!surfaces.length) return null;
   const weight = s => Math.min(s.w, 200);
   const total = surfaces.reduce((a, s) => a + weight(s), 0);
@@ -2173,9 +2467,9 @@ function randomChestSpot(section) {
       pick -= weight(s);
       if (pick <= 0) { surf = s; break; }
     }
-    const x = Math.round(surf.x + 2 + Math.random() * (surf.w - CHEST_W - 4));
-    const y = surf.y - CHEST_H;
-    if (overlaps(x, y, CHEST_W, CHEST_H)) continue;
+    const x = Math.round(surf.x + 2 + Math.random() * (surf.w - w - 4));
+    const y = surf.y - h;
+    if (overlaps(x, y, w, h)) continue;
     if (chests.some(c => Math.abs(c.x - x) < 30 && Math.abs(c.y - y) < 20)) continue;
     return { x, y };
   }
@@ -2191,7 +2485,7 @@ function broadcastChests() {
 
 function tickChests() {
   if (state !== 'game' || !isChestHost()) {
-    nextBiomeRoll = nextStormRoll = 0;
+    nextBiomeRoll = nextStormRoll = nextIceRoll = 0;
     return;
   }
   const now = performance.now();
@@ -2203,7 +2497,7 @@ function tickChests() {
   tickBiomeEvents(now);
   let added = false;
   if (biomeOpen) {
-    for (const k of ['wood', 'silver']) {
+    for (const k of Object.keys(BIOME_CHEST_MIX)) {
       let have = chests.filter(c => chestSection(c) >= BIOME_SECTION && chestKind(c) === k).length;
       while (have < BIOME_CHEST_MIX[k]) {
         const free = BIOME_CHEST_SPOTS.filter(sp => !chests.some(c => c.x === sp.x && c.y === sp.y));
@@ -2218,7 +2512,7 @@ function tickChests() {
     }
   }
   for (let sec = 0; sec < SECTIONS; sec++) {
-    for (const k of ['wood', 'silver']) {
+    for (const k of Object.keys(CHEST_MIX[sec])) {
       let have = chests.filter(c => chestSection(c) === sec && chestKind(c) === k).length;
       while (have < CHEST_MIX[sec][k]) {
         const spot = randomChestSpot(sec);
@@ -2231,19 +2525,42 @@ function tickChests() {
       }
     }
   }
+  // Rare ice chest: at most one, with a 1 in 5 chance each minute while there isn't one.
+  if (!nextIceRoll) nextIceRoll = now + ICE_ROLL_INTERVAL * 1000;
+  if (now >= nextIceRoll) {
+    nextIceRoll = now + ICE_ROLL_INTERVAL * 1000;
+    if (!chests.some(c => chestKind(c) === 'ice') && Math.random() < ICE_CHANCE) {
+      const spot = randomChestSpot(SNOW_SECTION, CHEST_KINDS.ice.w, CHEST_KINDS.ice.h);
+      if (spot) {
+        chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'ice', hp: CHEST_KINDS.ice.hp, flash: 0 });
+        added = true;
+        announceIceChest();
+      }
+    }
+  }
   if (added || chestsDirty || now - lastChestBroadcast > 1000) broadcastChests();
 }
 
 function chestHitFx(c, amount) {
   c.flash = HURT_FLASH;
-  addDamageNumber(c.x + CHEST_W / 2 - PLAYER_W / 2, c.y + 4, amount);
+  addDamageNumber(c.x + chestW(c) / 2 - PLAYER_W / 2, c.y + 4, amount);
 }
 
 function chestBlockedFx(c, msg) {
-  emit(c.x + CHEST_W / 2, c.y + CHEST_H / 2, 6, '#e8eef8', 70, 0.25);
-  damageNumbers.push({ x: c.x + CHEST_W / 2, y: c.y - 12, text: '0', life: 0.8 });
+  emit(c.x + chestW(c) / 2, c.y + chestH(c) / 2, 6, '#e8eef8', 70, 0.25);
+  damageNumbers.push({ x: c.x + chestW(c) / 2, y: c.y - 12, text: '0', life: 0.8 });
+  const kind = chestKind(c), rule = CHEST_KINDS[kind];
   const it = attackItem(msg && msg.w) || FIST_ITEM;
-  showToast(it.kind === 'bow' ? 'MAYBE TRY HOLDING RIGHT CLICK' : 'NEED A WEAPON STRONGER THAN A STONE SWORD');
+  // Point bow users at the charged shot when it would be strong enough.
+  const chargeHelps = it.kind === 'bow' && !(msg && msg.ch) && it.charged >= (rule.minDamage || 0);
+  if (rule.needsItem) showToast('NEEDS A FROZEN PICKAXE', '#b4ecfa');
+  else if (chargeHelps) showToast('MAYBE TRY HOLDING RIGHT CLICK');
+  else if (kind === 'stone') showToast('NEED A HIT THAT DOES MORE THAN 20 DAMAGE');
+  else showToast('NEED A WEAPON STRONGER THAN A STONE SWORD');
+}
+
+function announceIceChest() {
+  showToast('AN ICE CHEST HAS APPEARED IN THE SNOW BIOME', '#b4ecfa');
 }
 
 function applyChestHit(chestId, attackerId, d) {
@@ -2259,7 +2576,7 @@ function applyChestHit(chestId, attackerId, d) {
   } else {
     damage = hitDamage(d);
   }
-  if (chestKind(c) === 'silver' && !canHurtSilver(d)) {
+  if (!canHurtChest(chestKind(c), d)) {
     if (attackerId === myPeerId) chestBlockedFx(c, d);
     return;
   }
@@ -2282,16 +2599,17 @@ function onChestHit(id, d) {
 }
 
 function onChests(id, d) {
-  if (id !== chestHostId() || !d || !Array.isArray(d.l) || d.l.length > CHEST_COUNT * SECTIONS + 10) return;
+  if (id !== chestHostId() || !d || !Array.isArray(d.l) || d.l.length > 150) return;
   const old = new Map(chests.map(c => [c.id, c]));
   chests = [];
   for (const e of d.l) {
     if (!Array.isArray(e) || typeof e[0] !== 'string' || !Number.isFinite(e[1]) || !Number.isFinite(e[2])) continue;
     const prev = old.get(e[0]);
     const c = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp: 0, flash: prev ? prev.flash : 0 };
-    if (e[4] === 'wood' || e[4] === 'silver') c.k = e[4];
+    if (isChestKind(e[4])) c.k = e[4];
     c.hp = Math.max(0, Math.min(chestMaxHp(c), Number(e[3]) || 0));
     if (prev && c.hp < prev.hp) chestHitFx(c, prev.hp - c.hp);
+    if (!prev && c.k === 'ice' && chestsKnown) announceIceChest();
     chests.push(c);
   }
   chestsKnown = true;
@@ -2380,7 +2698,17 @@ function tickBiomeEvents(now) {
 }
 
 function onStorm(id, d) {
-  if (id !== chestHostId() || !d) return;
+  if (!d) return;
+  // Admin lightning can land on any surface, so it carries the rectangle itself.
+  if (Array.isArray(d.r)) {
+    const r = remotes.get(id);
+    if (!r || !r.n.includes('LARP')) return;
+    for (const e of d.r.slice(0, 40)) {
+      if (Array.isArray(e) && e.length === 3 && e.every(Number.isFinite)) startStormRect([e[0], e[1], Math.min(ADMIN_STORM_MAX_W, e[2])], id);
+    }
+    return;
+  }
+  if (id !== chestHostId()) return;
   const list = (Array.isArray(d.l) ? d.l : [d.i]).filter(i => Number.isInteger(i) && i >= 0 && i < BIOME_PLATS.length);
   if (!list.length) return;
   openBiome(true);
@@ -2389,6 +2717,10 @@ function onStorm(id, d) {
 
 function startStorm(i) {
   storms.push({ plat: BIOME_PLATS[i], at: performance.now(), struck: false, bolt: null });
+}
+// by: the admin who called it down; their own lightning never hurts them.
+function startStormRect([x, y, w], by) {
+  storms.push({ plat: { x, y, w }, at: performance.now(), struck: false, bolt: null, by });
 }
 
 const stormZone = s => ({ x: s.plat.x, y: s.plat.y - STORM_CLOUD_H, w: s.plat.w, h: STORM_CLOUD_H });
@@ -2407,11 +2739,11 @@ function tickStorms() {
     s.bolt.push([z.x + z.w / 2, s.plat.y]);
     emit(z.x + z.w / 2, s.plat.y, 24, '#fff6a0', 140, 0.5);
     emit(z.x + z.w / 2, s.plat.y, 10, '#8ad8ff', 90, 0.4);
-    if (state === 'game' && me.y < 60) {
-      const onScreen = Math.abs(z.x + z.w / 2 - (cam.x + VIEW_W / 2)) < VIEW_W / 2 + 40 && Math.abs(s.plat.y - (cam.y + VIEW_H / 2)) < VIEW_H / 2 + 80;
+    const onScreen = Math.abs(z.x + z.w / 2 - (cam.x + VIEW_W / 2)) < VIEW_W / 2 + 40 && Math.abs(s.plat.y - (cam.y + VIEW_H / 2)) < VIEW_H / 2 + 80;
+    if (state === 'game' && (me.y < 60 || (s.by && onScreen))) {
       skyFlash = Math.max(skyFlash, onScreen ? 0.45 : 0.2);
     }
-    if (state === 'game' && !me.dead && immuneLeft() <= 0 && rectsOverlap(me.x, me.y, PLAYER_W, PLAYER_H, z.x, z.y, z.w, z.h)) {
+    if (state === 'game' && !me.dead && s.by !== myPeerId && immuneLeft() <= 0 && rectsOverlap(me.x, me.y, PLAYER_W, PLAYER_H, z.x, z.y, z.w, z.h)) {
       hitByLightning();
     }
   }
@@ -2442,12 +2774,13 @@ function onChestBreak(d, fromId) {
   const c = chests.find(o => o.id === d.id);
   const x = c ? c.x : Number(d.x) || 0, y = c ? c.y : Number(d.y) || 0;
   chests = chests.filter(o => o.id !== d.id);
-  const kind = c ? chestKind(c) : d.k === 'wood' || d.k === 'silver' ? d.k : chestKind({ y });
-  const silver = kind === 'silver';
-  emit(x + CHEST_W / 2, y + CHEST_H / 2, 18, silver ? '#c2c8d4' : '#a8672f', 90, 0.6);
-  emit(x + CHEST_W / 2, y + CHEST_H / 2, 8, silver ? '#4ae8f0' : '#f2c14e', 70, 0.5);
+  const kind = c ? chestKind(c) : isChestKind(d.k) ? d.k : chestKind({ y });
+  const [fx1, fx2] = CHEST_KINDS[kind].fx;
+  const cx = x + (CHEST_KINDS[kind].w || CHEST_W) / 2, cy = y + (CHEST_KINDS[kind].h || CHEST_H) / 2;
+  emit(cx, cy, kind === 'ice' ? 40 : 18, fx1, 90, 0.6);
+  emit(cx, cy, 8, fx2, 70, 0.5);
   if (d.by !== myPeerId || state !== 'game') return;
-  grantChestReward(silver ? 'silver' : 'wood');
+  grantChestReward(kind, !!d.a);
 }
 
 function updateChests(dt) {
@@ -2473,7 +2806,10 @@ function die(killer) {
 }
 
 function resetLife() {
+  me.boosted = false;
+  updateMaxHp();
   me.hp = me.maxHp;
+  me.frozenUntil = 0;
   me.dashT = me.dashCd = 0;
   me.charging = false;
   me.jetting = false;
@@ -2511,12 +2847,13 @@ function leaveGame() {
   const leaving = room ? Promise.resolve(room.leave()).catch(() => {}) : Promise.resolve();
   room = null;
   sendState = sendHit = sendDamage = null;
-  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = null;
+  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = null;
   state = 'leaving';
   Promise.race([leaving, new Promise(r => setTimeout(r, 800))]).then(() => location.reload());
 }
 
 function updateMe(dt) {
+  syncFreezeBoost();
   me.flash = Math.max(0, me.flash - dt);
   me.punchT = Math.max(0, me.punchT - dt);
   me.punchCd = Math.max(0, me.punchCd - dt);
@@ -2736,6 +3073,18 @@ const ICONS = {
     '...oooooo...', '..obbbbbbo..', '.obbbbbbrro.', 'obbbbbbrrbbo', 'obbbbbrrbbbo', 'obbsbrrbbbbo',
     'obbbrrbbbbbo', 'obbrrbbbbbbo', 'obrrbbbbbbo.', '.orrbbbbbbo.', '..obbbbbbo..', '...oooooo...',
   ],
+  freeze: [
+    '.....oo.....', '..o..bb..o..', '.obo.bb.obo.', '..obobbobo..', '...obhhbo...', 'obbbbhhbbbbo',
+    'obbbbhhbbbbo', '...obhhbo...', '..obobbobo..', '.obo.bb.obo.', '..o..bb..o..', '.....oo.....',
+  ],
+  gauntlet: [
+    '............', '...oooooo...', '..obhbhbho..', '..obhbhbho..', '.oobbbbbbo..', 'obhobbbbbo..',
+    'obbobbbbbo..', '.obbbbbbbo..', '..obbbbbo...', '..ossssso...', '..ossssso...', '..ooooooo...',
+  ],
+  hammer: [
+    '.oooooooo...', 'ohhhhhhhho..', 'obbbbbbbbo..', 'obbbbbbbbo..', '.oooogoooo..', '....ogo.....',
+    '....ogo.....', '....ogo.....', '....ogo.....', '....ogo.....', '....ogo.....', '.....o......',
+  ],
 };
 function drawItemIcon(it, x, y) {
   const map = ICONS[it.icon || it.style || it.kind];
@@ -2751,7 +3100,7 @@ function drawItemIcon(it, x, y) {
 }
 function itemDescription(it) {
   if (it.chestDamage) return it.chestDamage + ' DMG TO CHESTS ONLY';
-  if (it.kind === 'melee') return it.damage + ' DMG';
+  if (it.kind === 'melee') return it.damage + ' DMG' + (it.freeze ? ' / CAN FREEZE' : it.cooldown ? ' / ' + it.cooldown + 'S COOLDOWN' : '');
   if (it.kind === 'bow') return it.damage + ' DMG / ' + it.charged + ' CHARGED';
   if (it.kind === 'shuriken') return it.damage + ' DMG X5 / RIGHT CLICK: X' + SHURIKEN_BURST_COUNT;
   if (it.kind === 'laser') return LASER_DPS + ' DMG/S / RIGHT CLICK: REFUEL';
@@ -2842,6 +3191,7 @@ function drawHud() {
   ctx.fillRect(VIEW_W - 16, 6, 9, 9);
   ctx.fillStyle = me.airJumps > 0 ? me.color : '#3a2f4a';
   ctx.fillRect(VIEW_W - 15, 7, 7, 7);
+  if (maxAirJumps() > 1) drawText(ctx, String(me.airJumps), VIEW_W - 11, 8, 1, me.airJumps > 0 ? '#140c1c' : '#ffffff', 'center');
 
   // Held weapon + dash
   const it = heldItem();
@@ -2946,22 +3296,28 @@ function drawDeathScreen() {
 function drawChests(cx, cy) {
   for (const c of chests) {
     const sx = Math.round(c.x - cx), sy = Math.round(c.y - cy);
-    if (sx < -CHEST_W || sx > VIEW_W || sy < -CHEST_H - 6 || sy > VIEW_H) continue;
-    const pal = chestKind(c) === 'silver' ? SILVER_PAL : CHEST_PAL;
+    const w = chestW(c), h = chestH(c);
+    if (sx < -w || sx > VIEW_W || sy < -h - 6 || sy > VIEW_H) continue;
+    const pal = CHEST_KINDS[chestKind(c)].pal;
     const maxHp = chestMaxHp(c);
-    for (let r = 0; r < CHEST_H; r++) {
-      for (let col = 0; col < CHEST_W; col++) {
-        const ch = CHEST_SPRITE[r][col];
+    // Bigger chests stretch the same sprite (nearest neighbour).
+    for (let r = 0; r < h; r++) {
+      for (let col = 0; col < w; col++) {
+        const ch = CHEST_SPRITE[Math.floor(r * CHEST_H / h)][Math.floor(col * CHEST_W / w)];
         if (ch === '.') continue;
         ctx.fillStyle = c.flash > 0 && ch !== 'o' ? '#ffffff' : pal[ch];
         ctx.fillRect(sx + col, sy + r, 1, 1);
       }
     }
+    if (chestKind(c) === 'ice' && Math.floor(time * 3 + c.x) % 4 === 0) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(sx + 3 + Math.floor((time * 7 + c.x) % (w - 6)), sy + 3, 1, 1);
+    }
     if (c.hp < maxHp) {
       ctx.fillStyle = '#140c1c';
-      ctx.fillRect(sx - 1, sy - 5, CHEST_W + 2, 3);
+      ctx.fillRect(sx - 1, sy - 5, w + 2, 3);
       ctx.fillStyle = hpColor(c.hp / maxHp);
-      ctx.fillRect(sx, sy - 4, Math.round(CHEST_W * c.hp / maxHp), 1);
+      ctx.fillRect(sx, sy - 4, Math.round(w * c.hp / maxHp), 1);
     }
   }
 }
@@ -3089,6 +3445,30 @@ function drawAdminPanel() {
     return;
   }
 
+  if (adminTab === 'events') {
+    const notes = {
+      ice: 'NEXT: ' + (adminIceCount + 1),
+      biome: biomeOpen ? 'ALREADY HERE' : '',
+      kill: [...remotes.values()].filter(r => !r.dead).length + ' ALIVE',
+      break: chests.length + ' CHESTS',
+      thunder: 'YOUR PLATFORM',
+      tracker: trackerRepeat ? 'ON: CLICK TO STOP' : 'X2 CLICK: REPEAT',
+    };
+    const colors = { ice: '#4a8ab0', biome: GRASS[BIOME_SECTION].dark, kill: '#8a2a30', break: '#7a5a2a', thunder: '#6a6a3a', tracker: '#5a5a2a' };
+    ADMIN_EVENTS.forEach((ev, i) => {
+      const r = eventBtnRect(i), on = ev.id === 'tracker' && trackerRepeat;
+      ctx.fillStyle = over(r) ? '#ffffff' : on ? '#fff6a0' : '#140c1c';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.fillStyle = colors[ev.id];
+      ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, 3);
+      drawText(ctx, ev.label, r.x + 6, r.y + 8, 1, '#ffffff', 'left', '#140c1c');
+      if (notes[ev.id]) drawText(ctx, notes[ev.id], r.x + r.w - 6, r.y + 8, 1, on ? '#fff6a0' : '#d8d0e8', 'right', '#140c1c');
+    });
+    return;
+  }
+
   // Search box
   const sb = ADMIN_SEARCH, sbtn = ADMIN_SEARCH_BTN;
   ctx.fillStyle = adminSearchFocus ? '#ffe66d' : over(sb) ? '#7a6a9a' : '#5a4a7a';
@@ -3168,6 +3548,47 @@ function drawToast() {
   ctx.fillRect(Math.round(VIEW_W / 2 - w / 2), VIEW_H - 34, w, 13);
   drawText(ctx, toast.text, VIEW_W / 2, VIEW_H - 30, 1, toast.color, 'center');
   ctx.globalAlpha = 1;
+}
+
+const snowflakes = [];
+const SNOW_TOP = WORLD_H - (SNOW_SECTION + 1) * SECTION_H, SNOW_BOTTOM = SNOW_TOP + SECTION_H;
+const SNOW_FADE_IN = 0.35, SNOW_FADE_OUT = 0.6;
+let snowAmt = 0;
+const inSnowBiome = () => state === 'game' && !me.dead && sectionOf(me.y + PLAYER_H) === SNOW_SECTION;
+function updateSnow(dt) {
+  const inside = inSnowBiome();
+  snowAmt = inside ? Math.min(1, snowAmt + dt / SNOW_FADE_IN) : Math.max(0, snowAmt - dt / SNOW_FADE_OUT);
+  if (snowAmt === 0) snowflakes.length = 0;
+  if (inside && snowflakes.length < 400) {
+    // Fill the whole view straight away when arriving, then keep it topped up from above.
+    const sparse = snowflakes.length < 80;
+    for (let n = sparse ? 8 : Math.floor(dt * 50 + Math.random()); n > 0; n--) {
+      snowflakes.push({ x: cam.x - 30 + Math.random() * (VIEW_W + 60), y: sparse ? cam.y + Math.random() * VIEW_H : cam.y - 4,
+        vy: 26 + Math.random() * 24, ph: Math.random() * 6.28, s: Math.random() < 0.25 ? 2 : 1 });
+    }
+  }
+  for (let i = snowflakes.length - 1; i >= 0; i--) {
+    const f = snowflakes[i];
+    f.ph += dt * 2;
+    f.y += f.vy * dt;
+    f.x += Math.sin(f.ph) * 12 * dt;
+    if (f.y > cam.y + VIEW_H + 4 || f.y < cam.y - 40 || f.y > SNOW_BOTTOM + 40) snowflakes.splice(i, 1);
+  }
+}
+
+function drawSnow(cx, cy) {
+  if (snowAmt <= 0) return;
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.85 * snowAmt;
+  for (const f of snowflakes) ctx.fillRect(Math.round(f.x - cx), Math.round(f.y - cy), f.s, f.s);
+  ctx.globalAlpha = 1;
+}
+
+// Whitens the whole view (neighbouring biomes included) only while the player is in the snow biome.
+function drawFrost() {
+  if (snowAmt <= 0) return;
+  ctx.fillStyle = `rgba(236, 248, 255, ${(0.3 * snowAmt).toFixed(3)})`;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 }
 
 // Draws the part of a world-space image (whose top edge sits at world y = top) that is in view.
@@ -3258,11 +3679,24 @@ function drawLine(x0, y0, x1, y1, color, width) {
   }
 }
 
+function drawIceBlock(x, y) {
+  x = Math.round(x); y = Math.round(y);
+  ctx.fillStyle = 'rgba(26, 74, 106, 0.8)';
+  ctx.fillRect(x - 2, y - 2, PLAYER_W + 4, PLAYER_H + 4);
+  ctx.fillStyle = 'rgba(180, 236, 250, 0.6)';
+  ctx.fillRect(x - 1, y - 1, PLAYER_W + 2, PLAYER_H + 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x, y, 3, 1);
+  ctx.fillRect(x, y + 1, 1, 2);
+  ctx.fillRect(x + PLAYER_W - 2, y + PLAYER_H - 3, 1, 2);
+}
+
 function drawGame() {
   const cx = Math.round(cam.x), cy = Math.round(cam.y);
   drawBackground(ctx, cx, cy);
   drawWorldImage(levelCanvas, 0, cx, cy);
   if (biomeOpen) drawWorldImage(biomeCanvas, BIOME_TOP, cx, cy);
+  drawFrost();
   drawChests(cx, cy);
   drawStorms(cx, cy, false);
 
@@ -3270,6 +3704,7 @@ function drawGame() {
     if (r.dead || hiddenFromMe(r)) continue;
     const rch = r.ch >= 0 ? r.ch / 10 : -1;
     drawPlayer(ctx, r.x - cx, r.y - cy, r.c, r.f, r.a, time, playerFx(r.c, r.flash, r.immune, r.punchT, r.w, r.ar, rch));
+    if (r.fr) drawIceBlock(r.x - cx, r.y - cy);
     drawNameAndHp(r.n, r.x - cx, r.y - cy, '#ffffff', r.hp, r.maxHp || BASE_HP, r.rb);
     drawChargeBar(r.x - cx, r.y - cy, rch);
     if (r.lz) drawBeam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], cx, cy);
@@ -3282,6 +3717,7 @@ function drawGame() {
     if (inBush) ctx.globalAlpha = 0.6;
     drawPlayer(ctx, me.x - cx, me.y - cy, me.color, me.facing, me.anim, time, fx);
     ctx.globalAlpha = 1;
+    if (performance.now() < me.frozenUntil) drawIceBlock(me.x - cx, me.y - cy);
     drawNameAndHp(me.name, me.x - cx, me.y - cy, '#ffe66d', me.hp, me.maxHp, radarActive() || inBush);
     if (performance.now() < me.stunUntil && Math.random() < 0.5) {
       emit(me.x + Math.random() * PLAYER_W, me.y + Math.random() * PLAYER_H, 1, Math.random() < 0.5 ? '#fff6a0' : '#8ad8ff', 30, 0.2);
@@ -3289,6 +3725,8 @@ function drawGame() {
     if (heldItem().kind === 'laser') {
       const out = me.laserOut > 0;
       drawChargeBar(me.x - cx, me.y - cy, out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / LASER_FUEL, out ? '#7a3a3a' : '#ff5a4a');
+    } else if (heldItem().cooldown >= 1 && me.punchCd > 0) {
+      drawChargeBar(me.x - cx, me.y - cy, 1 - me.punchCd / heldItem().cooldown, '#8a8a98');
     } else {
       drawChargeBar(me.x - cx, me.y - cy, mch);
     }
@@ -3298,6 +3736,7 @@ function drawGame() {
   drawStorms(cx, cy, true);
   drawArrows(cx, cy);
   drawParticles(ctx, cx, cy);
+  drawSnow(cx, cy);
   drawDamageNumbers(cx, cy);
   if (skyFlash > 0) {
     ctx.fillStyle = `rgba(255, 252, 230, ${Math.min(0.6, skyFlash)})`;
@@ -3342,6 +3781,7 @@ function frame(now) {
     updateArrows(dt);
     updateChests(dt);
     updateParticles(dt);
+    updateSnow(dt);
     updateDamageNumbers(dt);
     updateCamera(dt);
     drawGame();
