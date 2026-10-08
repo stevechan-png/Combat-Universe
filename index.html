@@ -152,6 +152,10 @@ function drawText(g, str, x, y, s = 1, col = '#fff', align = 'left', shadow = nu
 const SECTION_H = 540, SECTIONS = 5;
 const WORLD_W = 960, WORLD_H = SECTION_H * SECTIONS;
 const GROUND_Y = WORLD_H - 32;
+// Crafting bench in the bottom-left corner (decoration only, not solid).
+const BENCH = { x: 22, y: GROUND_Y - 14, w: 26, h: 14 };
+// Personal storage chest in the bottom-right corner (same size as an ice chest).
+const VAULT = { x: WORLD_W - 46, y: GROUND_Y - 16, w: 20, h: 16 };
 const BASE_Y = WORLD_H - SECTION_H;
 // The purple biome adds two more sections above the top (at negative y) once it opens.
 const BIOME_SECTION = SECTIONS, TOTAL_SECTIONS = SECTIONS + 2;
@@ -328,12 +332,79 @@ const GRASS = [
   { main: '#4fb53e', top: '#86e05c', dark: '#3a8f2e', tip: '#b6f08a' },
   { main: '#2c7330', top: '#46914a', dark: '#1d5222', tip: '#5fae5c' },
   { main: '#e4f4fa', top: '#ffffff', dark: '#a8d4e6', tip: '#ffffff' },
-  { main: '#c8383c', top: '#f0665e', dark: '#8c2228', tip: '#ffaea2' },
+  { main: '#ff6a1a', top: '#ffb040', dark: '#4a1c14', tip: '#ffe08a' },
   { main: '#9a4ad8', top: '#c88af0', dark: '#6a2a9a', tip: '#e8c0ff' },
   { main: '#9a4ad8', top: '#c88af0', dark: '#6a2a9a', tip: '#e8c0ff' },
 ];
 const SNOW_SECTION = 3;
-const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#e8f6ff', '#b84c4c', '#8a4ac8', '#8a4ac8'];
+const VOLCANO_SECTION = 4;
+const WALL_TINT = [null, '#a08a5c', '#4a9a56', '#e8f6ff', '#2a2226', '#8a4ac8', '#8a4ac8'];
+const MAGMA_CHANCE = 0.4;
+const magmaPlats = [];
+
+function drawBasaltBlock(g, s, rnd) {
+  g.fillStyle = '#2a2a31';
+  g.fillRect(s.x, s.y, s.w, s.h);
+  // Columnar joints: narrow vertical columns in slightly different greys.
+  const shades = ['#2e2e36', '#34343d', '#28282f', '#3a3a44'];
+  for (let x = s.x; x < s.x + s.w;) {
+    const cw = 3 + Math.floor(rnd() * 4);
+    g.fillStyle = shades[Math.floor(rnd() * shades.length)];
+    g.fillRect(x, s.y, Math.min(cw, s.x + s.w - x), s.h);
+    g.fillStyle = '#1a1a20';
+    g.fillRect(x, s.y + 2, 1, s.h - 2);
+    for (let y = s.y + 4; y < s.y + s.h - 1; y += 3 + Math.floor(rnd() * 4)) {
+      if (rnd() < 0.35) g.fillRect(x, y, Math.min(cw, s.x + s.w - x), 1);
+    }
+    x += cw;
+  }
+  for (let i = 0; i < s.w / 10; i++) {
+    g.fillStyle = rnd() < 0.15 ? '#ff6a2a' : '#8a8a94';
+    g.fillRect(s.x + Math.floor(rnd() * s.w), s.y + 3 + Math.floor(rnd() * Math.max(1, s.h - 4)), 1, 1);
+  }
+  g.fillStyle = '#4e4e5a';
+  g.fillRect(s.x, s.y, s.w, 2);
+  g.fillStyle = '#6e6e7c';
+  g.fillRect(s.x, s.y, s.w, 1);
+  g.fillStyle = '#a0a0aa';
+  for (let x = s.x + 1; x < s.x + s.w - 1; x++) if (rnd() < 0.1) g.fillRect(x, s.y - 1, 1, 1);
+  g.fillStyle = '#141418';
+  g.fillRect(s.x, s.y + s.h - 1, s.w, 1);
+  g.fillRect(s.x, s.y, 1, s.h);
+  g.fillRect(s.x + s.w - 1, s.y, 1, s.h);
+}
+
+function drawMagmaBlock(g, s, rnd) {
+  g.fillStyle = '#3a1a14';
+  g.fillRect(s.x, s.y, s.w, s.h);
+  for (let i = 0; i < (s.w * s.h) / 8; i++) {
+    g.fillStyle = rnd() < 0.5 ? '#2a120e' : '#4a2218';
+    g.fillRect(s.x + Math.floor(rnd() * s.w), s.y + 3 + Math.floor(rnd() * (s.h - 3)), 2, 1);
+  }
+  // Glowing cracks wander down through the crust.
+  for (let i = 0; i < s.w / 9; i++) {
+    let x = s.x + 2 + Math.floor(rnd() * (s.w - 4));
+    for (let y = s.y + 3; y < s.y + s.h - 1; y++) {
+      g.fillStyle = '#ff6a1a';
+      g.fillRect(x, y, 1, 1);
+      if (rnd() < 0.5) { g.fillStyle = '#ffc04a'; g.fillRect(x, y, 1, 1); }
+      x = Math.max(s.x + 1, Math.min(s.x + s.w - 2, x + Math.floor(rnd() * 3) - 1));
+      if (rnd() < 0.2) break;
+    }
+  }
+  g.fillStyle = '#ff6a1a';
+  g.fillRect(s.x, s.y, s.w, 3);
+  g.fillStyle = '#ffa030';
+  g.fillRect(s.x, s.y, s.w, 2);
+  g.fillStyle = '#ffe08a';
+  g.fillRect(s.x, s.y, s.w, 1);
+  g.fillStyle = '#5a2418';
+  for (let x = s.x; x < s.x + s.w; x++) if (rnd() < 0.12) g.fillRect(x, s.y + 1, 1 + Math.floor(rnd() * 2), 1);
+  g.fillStyle = '#1a0a08';
+  g.fillRect(s.x, s.y + s.h - 1, s.w, 1);
+  g.fillRect(s.x, s.y, 1, s.h);
+  g.fillRect(s.x + s.w - 1, s.y, 1, s.h);
+}
 
 function drawDirtBlock(g, s, rnd, grass) {
   g.fillStyle = '#6b4a2f';
@@ -415,12 +486,20 @@ function drawBrickWall(g, s, rnd, tint, moss, amount = 0.14) {
 const [levelCanvas, lg] = makeCanvas(WORLD_W, WORLD_H);
 (function buildLevel() {
   const rnd = mulberry32(1337);
+  const lavaRnd = mulberry32(4040);
   for (const s of solids) {
     if (s.t === 'ceiling') continue;
     const sec = sectionOf(s.y + s.h / 2);
-    const snowy = sec === SNOW_SECTION;
-    if (s.t === W || s.t === 'border') drawBrickWall(lg, s, rnd, WALL_TINT[sec], GRASS[sec].dark, snowy ? 0.55 : 0.14);
-    else drawDirtBlock(lg, s, rnd, GRASS[sec]);
+    const snowy = sec === SNOW_SECTION, volcanic = sec === VOLCANO_SECTION;
+    if (s.t === W || s.t === 'border') {
+      drawBrickWall(lg, s, rnd, WALL_TINT[sec], volcanic ? '#ff6a1a' : GRASS[sec].dark, snowy ? 0.55 : volcanic ? 0.6 : 0.14);
+    } else if (volcanic) {
+      const magma = lavaRnd() < MAGMA_CHANCE;
+      if (magma) magmaPlats.push(s);
+      (magma ? drawMagmaBlock : drawBasaltBlock)(lg, s, rnd);
+    } else {
+      drawDirtBlock(lg, s, rnd, GRASS[sec]);
+    }
     if (snowy && s.t !== 'border') drawSnowCap(lg, s, rnd);
   }
 })();
@@ -574,8 +653,24 @@ function drawPlayer(g, x, y, color, facing, anim, t, fx = {}) {
     g.fillStyle = fx.flash || col;
     g.fillRect(x + (facing > 0 ? c : 9 - c), yy, 1, 1);
   };
-  if (fx.armor & 1) {
-    const L = ITEMS.leather_helmet.color;
+  // fx.armor: item keys for [head, chest, legs, feet], '' when empty.
+  const armorColor = i => (fx.armor && fx.armor[i] && ITEMS[fx.armor[i]] ? ITEMS[fx.armor[i]].color : null);
+  let L = armorColor(1);
+  if (L) {
+    for (let r = 6; r < BODY.length; r++) {
+      for (let c = 1; c < 9; c++) {
+        if (BODY[r][c] !== 'o' && BODY[r][c] !== '.') plotCol(c, y + r + bob, r === 6 ? shade(L, 0.3) : r === BODY.length - 1 ? shade(L, -0.3) : L);
+      }
+    }
+  }
+  L = armorColor(2);
+  if (L) {
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 10; c++) if (legs[r][c] === 'b') plotCol(c, y + BODY.length + r, L);
+    }
+  }
+  L = armorColor(0);
+  if (L) {
     for (let c = 1; c <= 8; c++) {
       plotCol(c, y + bob, shade(L, -0.35));
       plotCol(c, y + 1 + bob, c === 2 ? shade(L, 0.3) : L);
@@ -583,8 +678,8 @@ function drawPlayer(g, x, y, color, facing, anim, t, fx = {}) {
     plotCol(0, y + 2 + bob, shade(L, -0.35));
     plotCol(9, y + 2 + bob, shade(L, -0.35));
   }
-  if (fx.armor & 2) {
-    const L = ITEMS.leather_boots.color;
+  L = armorColor(3);
+  if (L) {
     const row = legs[2].trim() ? 2 : 1;
     for (let c = 0; c < 10; c++) if (legs[row][c] !== '.') plotCol(c, y + BODY.length + row, L);
   }
@@ -606,7 +701,17 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
     g.fillRect(x + (facing > 0 ? c : 9 - c), y + r, 1, 1);
   };
   const hilt = '#5a3a1a', guard = '#3a2414';
-  if (it.style === 'pickaxe') {
+  if (it.kind === 'material') {
+    // Held materials: the inventory icon at half size, in front of the hand.
+    const map = ICONS[it.icon], pal = iconPalette(it);
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) {
+        const cell = [map[r * 2][c * 2], map[r * 2 + 1][c * 2 + 1], map[r * 2][c * 2 + 1], map[r * 2 + 1][c * 2]];
+        const ch = cell.find(k => k !== '.' && k !== 'o') || cell.find(k => k !== '.');
+        if (ch) px(9 + c, 3 + r, pal[ch]);
+      }
+    }
+  } else if (it.style === 'pickaxe') {
     const head = it.color, dark = shade(it.color, -0.35);
     if (attacking) {
       const end = 5 + it.range;
@@ -748,7 +853,7 @@ const JUMP_BUFFER = 0.12;
 const WALL_PROBE = 2;
 
 const BASE_HP = 200;
-const HP_LIMIT = 400;
+const HP_LIMIT = 500;
 const PUNCH_DAMAGE = 5;
 const PUNCH_RANGE = 12;
 const PUNCH_TIME = 0.12;
@@ -825,7 +930,7 @@ const me = {
   dashT: 0, dashDir: 1, dashCd: 0, charging: false, chargeT: 0,
   ammo: SHURIKEN_AMMO, burst: 0, burstT: 0, lastThrow: 0,
   fuel: LASER_FUEL, laserOut: 0, laserTick: 0, beam: null, refueling: false,
-  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, frozenUntil: 0, boosted: false, radarUntil: 0, radarCdUntil: 0,
+  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, frozenUntil: 0, boosted: false, radarUntil: 0, radarCdUntil: 0, luckUntil: 0, snowFill: 0, bucketFullWarned: false,
 };
 const radarActive = () => performance.now() < me.radarUntil;
 const picker = hexToHsv(me.color);
@@ -888,15 +993,21 @@ addEventListener('keydown', e => {
     e.preventDefault();
     if (!e.repeat) toggleAdmin();
   }
-  if (e.code === 'KeyE' && !e.repeat && state === 'game' && !me.dead) {
-    inventoryOpen = !inventoryOpen;
-    if (inventoryOpen) {
-      pickerOpen = false;
-      closeAdmin();
+  const benchKey = e.code === 'KeyE' || e.code === 'ShiftLeft' || e.code === 'ShiftRight';
+  if (benchKey && !e.repeat && state === 'game' && !me.dead) {
+    if (craftOpen || storageOpen) craftOpen = storageOpen = false;
+    else if (nearBench()) openCraft();
+    else if (nearVault()) openStorage();
+    else if (e.code === 'KeyE') {
+      inventoryOpen = !inventoryOpen;
+      if (inventoryOpen) {
+        pickerOpen = false;
+        closeAdmin();
+      }
     }
   }
   if (e.code === 'Escape') {
-    inventoryOpen = pickerOpen = false;
+    inventoryOpen = pickerOpen = craftOpen = storageOpen = false;
     closeAdmin();
   }
   if (!e.repeat && !keys.has(e.code)) {
@@ -943,18 +1054,141 @@ const PICKER = { x: VIEW_W / 2 - 64, y: 21, w: 128, h: 76 };
 const SV_RECT = { x: PICKER.x + 4, y: PICKER.y + 4, w: 100, h: 68 };
 const HUE_RECT = { x: PICKER.x + 110, y: PICKER.y + 4, w: 14, h: 68 };
 const INV_COLS = 10, INV_SLOT = 16, INV_GAP = 2;
-const INV_PANEL = { x: VIEW_W / 2 - 122, y: 33, w: 244, h: 204 };
+const INV_PANEL = { x: VIEW_W / 2 - 148, y: 33, w: 296, h: 204 };
 const invSlotRect = i => ({
   x: INV_PANEL.x + 6 + (i % INV_COLS) * (INV_SLOT + INV_GAP),
   y: INV_PANEL.y + 20 + Math.floor(i / INV_COLS) * (INV_SLOT + INV_GAP),
   w: INV_SLOT, h: INV_SLOT,
 });
 const DELETE_BTN = { x: VIEW_W - 24, y: VIEW_H - 24, w: 18, h: 18 };
-const EQUIP_SLOTS = ['hand', 'hand2', 'head', 'feet', 'power'];
-const EQUIP_LABELS = { hand: 'WEAPON 1', hand2: 'WEAPON 2', head: 'HEAD', feet: 'FEET', power: 'POWER' };
-const equipSlotRect = i => ({ x: INV_PANEL.x + 201, y: INV_PANEL.y + 22 + i * 36, w: 22, h: 22 });
+const EQUIP_SLOTS = ['hand', 'hand2', 'power', 'head', 'chest', 'legs', 'feet'];
+const EQUIP_LABELS = { hand: 'WEAPON 1', hand2: 'WEAPON 2', power: 'POWER', head: 'HEAD', chest: 'CHEST', legs: 'LEGS', feet: 'FEET' };
+// Weapons and power in the left column, armor top to bottom in the right one.
+const EQUIP_GRID = { hand: [0, 0], hand2: [0, 1], power: [0, 2], head: [1, 0], chest: [1, 1], legs: [1, 2], feet: [1, 3] };
+const equipSlotRect = slot => ({ x: INV_PANEL.x + 203 + EQUIP_GRID[slot][0] * 52, y: INV_PANEL.y + 22 + EQUIP_GRID[slot][1] * 36, w: 22, h: 22 });
 let pickerOpen = false;
 let dragTarget = null;
+const lastInvClick = { item: null, t: 0 };
+
+// Crafting bench
+const CRAFT_PANEL = { x: VIEW_W / 2 - 130, y: 50, w: 260, h: 126 };
+const CRAFT_BTN = { x: CRAFT_PANEL.x + CRAFT_PANEL.w - 66, y: CRAFT_PANEL.y + 62, w: 60, h: 16 };
+const DUMP_BTN = { x: CRAFT_PANEL.x + CRAFT_PANEL.w - 66, y: CRAFT_PANEL.y + 98, w: 60, h: 16 };
+const RECIPES = [{ key: 'luck_potion', needs: [['clover', 5], ['water', 1]] }];
+let craftOpen = false;
+const nearBench = () => !me.dead
+  && me.x + PLAYER_W > BENCH.x - 14 && me.x < BENCH.x + BENCH.w + 14
+  && me.y + PLAYER_H > BENCH.y - 20 && me.y < BENCH.y + BENCH.h;
+const canCraft = r => r.needs.every(([key, n]) => itemCount(key) >= n);
+function openCraft() {
+  craftOpen = true;
+  inventoryOpen = pickerOpen = storageOpen = false;
+  closeAdmin();
+}
+// Storage chest: 100 slots saved in this browser under the player's name, so
+// it survives reloads while the normal inventory doesn't.
+const STORAGE_SIZE = 100;
+const STORAGE_PANEL = { x: VIEW_W / 2 - 196, y: 29, w: 392, h: 214 };
+const storageGrid = side => ({ x: STORAGE_PANEL.x + (side === 'inv' ? 6 : 208), y: STORAGE_PANEL.y + 30 });
+const storageSlotRect = (side, i) => {
+  const g = storageGrid(side);
+  return { x: g.x + (i % INV_COLS) * (INV_SLOT + INV_GAP), y: g.y + Math.floor(i / INV_COLS) * (INV_SLOT + INV_GAP), w: INV_SLOT, h: INV_SLOT };
+};
+let storage = [];
+let storageOpen = false;
+const storageKey = () => 'combat.storage.' + me.name.toUpperCase();
+const nearVault = () => !me.dead
+  && me.x + PLAYER_W > VAULT.x - 14 && me.x < VAULT.x + VAULT.w + 14
+  && me.y + PLAYER_H > VAULT.y - 20 && me.y < VAULT.y + VAULT.h;
+
+function loadStorage() {
+  storage = [];
+  try {
+    const list = JSON.parse(localStorage.getItem(storageKey()) || '[]');
+    if (!Array.isArray(list)) return;
+    for (const e of list) {
+      if (storage.length >= STORAGE_SIZE) break;
+      if (!e || typeof e.key !== 'string' || !ITEMS[e.key]) continue;
+      const item = { key: e.key };
+      if (stackMax(e.key) > 1) item.n = Math.max(1, Math.min(stackMax(e.key), Math.floor(Number(e.n) || 1)));
+      if (Number.isFinite(e.melt)) item.melt = Math.max(0, Math.min(MELT_TIME, e.melt));
+      storage.push(item);
+    }
+  } catch (e) { /* bad or missing save */ }
+}
+
+function saveStorage() {
+  try {
+    localStorage.setItem(storageKey(), JSON.stringify(storage.map(i => {
+      const o = { key: i.key };
+      if (i.n) o.n = i.n;
+      if (i.melt) o.melt = i.melt;
+      return o;
+    })));
+  } catch (e) { /* storage full or blocked */ }
+}
+
+// Moves a whole stack, topping up matching stacks first. Returns false if nothing fit.
+function transferItem(item, from, to, cap) {
+  const max = stackMax(item.key);
+  let n = item.n || 1;
+  if (max > 1) {
+    for (const s of to) {
+      if (s.key !== item.key || (s.n || 1) >= max) continue;
+      const take = Math.min(max - (s.n || 1), n);
+      s.n = (s.n || 1) + take;
+      n -= take;
+      if (!n) break;
+    }
+  }
+  if (n > 0 && to.length < cap) {
+    const copy = { key: item.key };
+    if (max > 1) copy.n = n;
+    if (item.melt) copy.melt = item.melt;
+    to.push(copy);
+    n = 0;
+  }
+  if (n === (item.n || 1)) return false;
+  if (n > 0) {
+    item.n = n;
+    return true;
+  }
+  for (const slot of EQUIP_SLOTS) if (equipped[slot] === item) toggleEquip(item);
+  from.splice(from.indexOf(item), 1);
+  return true;
+}
+
+function storeItem(item) {
+  if (!transferItem(item, inventory, storage, STORAGE_SIZE)) showToast('STORAGE FULL (' + STORAGE_SIZE + ' SLOTS)', '#ff8a8a');
+  saveStorage();
+}
+
+function takeItem(item) {
+  if (!transferItem(item, storage, inventory, INVENTORY_SIZE)) showToast('INVENTORY FULL', '#ff8a8a');
+  saveStorage();
+}
+
+function openStorage() {
+  storageOpen = true;
+  inventoryOpen = pickerOpen = craftOpen = false;
+  closeAdmin();
+}
+
+function craftItem(r) {
+  const missing = r.needs.find(([key, n]) => itemCount(key) < n);
+  if (missing) {
+    const [key, n] = missing;
+    showToast('NEED ' + n + ' ' + ITEMS[key].name + (n > 1 ? 'S' : ''), '#ff8a8a');
+    return;
+  }
+  if (!canAdd(r.key)) {
+    showToast('INVENTORY FULL', '#ff8a8a');
+    return;
+  }
+  for (const [key, n] of r.needs) removeItems(key, n);
+  addItem(r.key);
+  showToast('CRAFTED ' + ITEMS[r.key].name + '!', ITEMS[r.key].color);
+}
 
 function applyPick() {
   if (dragTarget === 'sv') {
@@ -987,7 +1221,7 @@ canvas.addEventListener('pointerdown', e => {
   if (over(COLOR_BTN)) {
     pickerOpen = !pickerOpen;
     if (pickerOpen) {
-      inventoryOpen = false;
+      inventoryOpen = craftOpen = storageOpen = false;
       closeAdmin();
     }
     return;
@@ -998,6 +1232,21 @@ canvas.addEventListener('pointerdown', e => {
       return;
     }
     adminSearchFocus = false;
+  }
+  if (storageOpen && over(STORAGE_PANEL)) {
+    if (e.button !== 0) return;
+    for (let i = 0; i < inventory.length; i++) {
+      if (over(storageSlotRect('inv', i))) { storeItem(inventory[i]); return; }
+    }
+    for (let i = 0; i < storage.length; i++) {
+      if (over(storageSlotRect('box', i))) { takeItem(storage[i]); return; }
+    }
+    return;
+  }
+  if (craftOpen && over(CRAFT_PANEL)) {
+    if (e.button === 0 && over(CRAFT_BTN)) craftItem(RECIPES[0]);
+    if (e.button === 0 && over(DUMP_BTN)) dumpWater();
+    return;
   }
   if (inventoryOpen && over(DELETE_BTN)) {
     if (e.button === 0) deleteMarkedItems();
@@ -1012,10 +1261,20 @@ canvas.addEventListener('pointerdown', e => {
     }
     if (e.button !== 0) return;
     for (let i = 0; i < inventory.length; i++) {
-      if (over(invSlotRect(i))) { toggleEquip(inventory[i]); return; }
+      if (!over(invSlotRect(i))) continue;
+      const item = inventory[i], now = performance.now();
+      if (lastInvClick.item === item && now - lastInvClick.t < 350) {
+        lastInvClick.item = null;
+        useItem(item);
+      } else {
+        lastInvClick.item = item;
+        lastInvClick.t = now;
+        toggleEquip(item);
+      }
+      return;
     }
-    EQUIP_SLOTS.forEach((slot, i) => {
-      if (!over(equipSlotRect(i))) return;
+    EQUIP_SLOTS.forEach(slot => {
+      if (!over(equipSlotRect(slot))) return;
       if (equipped[slot]) toggleEquip(equipped[slot]);
       else if (slot === 'hand' || slot === 'hand2') selectHand(slot);
     });
@@ -1128,7 +1387,7 @@ function stepPlayer(p, dt) {
   let accel = p.onGround ? ACCEL_GROUND : ACCEL_AIR;
   if (p.lock > 0) accel *= 0.15;
   if (dir !== 0) {
-    const target = dir * RUN_SPEED;
+    const target = dir * RUN_SPEED * speedMult();
     p.vx += Math.sign(target - p.vx) * Math.min(Math.abs(target - p.vx), accel * dt);
     if (p.lock <= 0) p.facing = dir;
   } else {
@@ -1177,7 +1436,7 @@ function stepPlayer(p, dt) {
     p.vy = 0;
     p.facing = p.dashDir;
     if (Math.random() < 0.6) emit(p.x + PLAYER_W / 2, p.y + 2 + Math.random() * (PLAYER_H - 4), 1, Math.random() < 0.5 ? p.color : '#ffffff', 15, 0.25);
-    if (p.dashT <= 0) p.vx = p.dashDir * RUN_SPEED;
+    if (p.dashT <= 0) p.vx = p.dashDir * RUN_SPEED * speedMult();
   }
 
   // Jumping
@@ -1322,7 +1581,7 @@ function packState() {
     f: me.facing, a: me.anim, j: me.airJumpCount, p: me.punchCount,
     hp: me.hp, mh: me.maxHp, d: me.dead ? 1 : 0, i: immuneLeft() > 0 ? 1 : 0,
     c: me.color, n: me.name, t: me.joinedAt,
-    w: heldKey(), ar: (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0),
+    w: heldKey(), ar: armorList(),
     ch: me.charging ? Math.round(Math.min(1, me.chargeT / BOW_CHARGE_TIME) * 10) : -1,
     rb: radarActive() ? 1 : 0, jt: me.jetting ? 1 : 0, bu: myBush(),
     pw: powerKey(), fr: performance.now() < me.frozenUntil ? 1 : 0,
@@ -1357,7 +1616,9 @@ function onRemote(id, d) {
   r.maxHp = Math.max(1, clampHp(d.mh ?? BASE_HP));
   r.hp = Math.min(r.maxHp, clampHp(d.hp ?? r.maxHp));
   r.w = typeof d.w === 'string' && ITEMS[d.w] ? d.w : '';
-  r.ar = d.ar | 0;
+  r.ar = Array.isArray(d.ar)
+    ? ARMOR_SLOTS.map((s, i) => (typeof d.ar[i] === 'string' && ITEMS[d.ar[i]] && ARMOR_KINDS[ITEMS[d.ar[i]].kind] === s ? d.ar[i] : ''))
+    : ['', '', '', ''];
   r.ch = Number.isFinite(d.ch) ? d.ch : -1;
   r.rb = !!d.rb;
   r.jt = !!d.jt;
@@ -1470,6 +1731,9 @@ async function startNet() {
     const adminAction = room.makeAction('admin');
     sendAdmin = (d, target) => adminAction.send(d, target ? { target } : undefined);
     adminAction.onMessage = (d, ctx) => onAdminMsg(ctx.peerId, d);
+    const cloverAction = room.makeAction('clover');
+    sendClover = (d, target) => cloverAction.send(d, target ? { target } : undefined);
+    cloverAction.onMessage = (d, ctx) => onCloverMsg(ctx.peerId, d);
     const biomeAction = room.makeAction('biome');
     sendBiome = d => biomeAction.send(d);
     biomeAction.onMessage = d => {
@@ -1565,7 +1829,7 @@ function hitChest(c, msg) {
 }
 
 // fz asks the victim for the Freeze Power bonus; the victim checks it against our state.
-const attackMsg = () => (freezeBoosted() ? { w: heldKey() || 'punch', fz: 1 } : { w: heldKey() || 'punch' });
+const attackMsg = () => (freezeBoosted() ? { w: weaponKey() || 'punch', fz: 1 } : { w: weaponKey() || 'punch' });
 
 function doMelee() {
   const it = heldItem();
@@ -1584,6 +1848,7 @@ function doMelee() {
   for (const c of [...chests]) {
     if (rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, chestW(c), chestH(c))) hitChest(c, msg);
   }
+  hitClovers(hx, me.y, reach, msg);
   broadcastState();
 }
 
@@ -1874,32 +2139,77 @@ const ITEMS = {
   ice_gauntlet: { name: 'ICE GAUNTLET', kind: 'melee', style: 'gauntlet', damage: 8, range: PUNCH_RANGE, cooldown: 0.15, color: '#b4ecfa', rarity: 'legendary' },
   diamond_katana: { name: 'DIAMOND KATANA', kind: 'melee', style: 'katana', damage: 16, range: KATANA_RANGE, color: '#6ae8f0', rarity: 'legendary' },
   heavy_hammer: { name: 'HEAVY HAMMER', kind: 'melee', style: 'hammer', damage: 40, range: KATANA_RANGE, cooldown: 5, color: '#8a8a98', rarity: 'mythic' },
+  leather_chestplate: { name: 'LEATHER CHESTPLATE', kind: 'chestplate', hp: 10, color: '#9a6232', rarity: 'common' },
+  leather_leggings: { name: 'LEATHER LEGGINGS', kind: 'leggings', hp: 10, color: '#8a5428', rarity: 'common' },
+  speed_boots: { name: 'SPEED BOOTS', kind: 'boots', hp: 0, speed: 1.25, color: '#4ae8d0', rarity: 'rare' },
+  iron_helmet: { name: 'IRON HELMET', kind: 'helmet', hp: 15, color: '#c8ccd6', rarity: 'rare' },
+  iron_chestplate: { name: 'IRON CHESTPLATE', kind: 'chestplate', hp: 18, color: '#c8ccd6', rarity: 'rare' },
+  iron_leggings: { name: 'IRON LEGGINGS', kind: 'leggings', hp: 18, color: '#b4b8c4', rarity: 'rare' },
+  iron_boots: { name: 'IRON BOOTS', kind: 'boots', hp: 15, color: '#b4b8c4', rarity: 'rare' },
+  heavy_chestplate: { name: 'HEAVY CHESTPLATE', kind: 'chestplate', hp: 50, speed: 0.5, color: '#5a5a6a', rarity: 'epic' },
+  diamond_helmet: { name: 'DIAMOND HELMET', kind: 'helmet', hp: 18, color: '#6ae8f0', rarity: 'epic' },
+  diamond_chestplate: { name: 'DIAMOND CHESTPLATE', kind: 'chestplate', hp: 24, color: '#6ae8f0', rarity: 'legendary' },
+  diamond_leggings: { name: 'DIAMOND LEGGINGS', kind: 'leggings', hp: 23, color: '#4ad4e0', rarity: 'epic' },
+  diamond_boots: { name: 'DIAMOND BOOTS', kind: 'boots', hp: 18, color: '#4ad4e0', rarity: 'epic' },
+  clover: { name: 'CLOVER', kind: 'material', icon: 'clover', stack: 10, color: '#3a9a34', rarity: 'uncommon', desc: 'CRAFTING MATERIAL / STACKS TO 10' },
+  water: { name: 'WATER', kind: 'material', icon: 'water', stack: 10, color: '#4aa8ff', rarity: 'uncommon', desc: 'CRAFTING MATERIAL / STACKS TO 10' },
+  bucket: { name: 'BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#2a2a36', rarity: 'common', autoHold: true, desc: 'MAYBE YOU CAN FILL IT WITH SOMETHING' },
+  snow_bucket: { name: 'SNOW BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#f4f8ff', rarity: 'common', desc: 'MAYBE SOMETHING CAN MELT IT' },
+  water_bucket: { name: 'WATER BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#4aa8ff', rarity: 'common', desc: 'DUMP IT AT THE CRAFTING BENCH' },
+  luck_potion: { name: 'LUCK POTION', kind: 'consumable', icon: 'potion', color: '#4ae86a', rarity: 'rare' },
 };
+const BUCKET_KEYS = ['bucket', 'snow_bucket', 'water_bucket'];
+const SNOW_FILL_TIME = 10, MELT_TIME = 30, MELT_TIME_LAVA = 10;
+const LUCK_MULT = 1.5;
+const LUCK_TIME = 120;
+const luckActive = () => performance.now() < me.luckUntil;
+const ARMOR_KINDS = { helmet: 'head', chestplate: 'chest', leggings: 'legs', boots: 'feet' };
+const ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'];
 // Drop chances are "1 in N" each; they are used as relative weights.
 const DROP_TABLES = {
   wood: { wood_sword: 2, leather_helmet: 4, leather_boots: 5, stone_sword: 7, wood_katana: 10, bow: 15, iron_sword: 20, stone_katana: 23, dash: 25, gold_bow: 30 },
   silver: { bow: 2, dash: 5, shuriken: 9, stone_pickaxe: 13, iron_katana: 18, radar_blocker: 20, jetpack: 25, laser_gun: 30 },
   stone: { stone_pickaxe: 3, iron_katana: 5, jetpack: 8, diamond_sword: 13, freeze_power: 15, frozen_blade: 20, diamond_bow: 25, ice_gauntlet: 30, diamond_katana: 40, heavy_hammer: 50 },
+  armor: {
+    leather_leggings: 2, leather_chestplate: 4, speed_boots: 7, iron_helmet: 10, iron_boots: 10, iron_leggings: 15, iron_chestplate: 15,
+    heavy_chestplate: 20, diamond_helmet: 25, diamond_boots: 25, diamond_leggings: 28, diamond_chestplate: 29,
+  },
 };
 // Ice chests borrow the stone table until they get their own.
 DROP_TABLES.ice = DROP_TABLES.stone;
-function rollChestItem(kind = 'wood') {
-  const table = DROP_TABLES[kind];
-  const total = Object.values(table).reduce((a, n) => a + 1 / n, 0);
-  let pick = Math.random() * total;
-  for (const [key, n] of Object.entries(table)) {
-    pick -= 1 / n;
-    if (pick <= 0) return key;
+// Luck makes every drop except the most common one `luck` times as likely;
+// the most common drop gives up the difference.
+function rollChestItem(kind = 'wood', luck = 1) {
+  const entries = Object.entries(DROP_TABLES[kind]);
+  const total = entries.reduce((a, [, n]) => a + 1 / n, 0);
+  let p = entries.map(([, n]) => 1 / n / total);
+  if (luck !== 1) {
+    const top = p.indexOf(Math.max(...p));
+    const rest = (1 - p[top]) * luck;
+    const scale = rest > 0.99 ? 0.99 / rest : 1;
+    p = p.map((v, i) => (i === top ? 0 : v * luck * scale));
+    p[top] = 1 - p.reduce((a, b) => a + b, 0);
   }
-  return Object.keys(table)[0];
+  let pick = Math.random();
+  for (let i = 0; i < entries.length; i++) {
+    pick -= p[i];
+    if (pick <= 0) return entries[i][0];
+  }
+  return entries[0][0];
 }
 
-const equipped = { hand: null, hand2: null, head: null, feet: null, power: null };
+const equipped = { hand: null, hand2: null, head: null, chest: null, legs: null, feet: null, power: null };
 let activeHand = 'hand';
 const HAND_KINDS = ['melee', 'bow', 'shuriken', 'laser'];
-const slotFor = it => (HAND_KINDS.includes(it.kind) ? 'hand' : it.kind === 'helmet' ? 'head' : it.kind === 'boots' ? 'feet' : it.kind === 'power' ? 'power' : null);
+// Materials can be held in a weapon slot, but attack like a bare fist.
+const slotFor = it => (HAND_KINDS.includes(it.kind) || it.kind === 'material' ? 'hand' : ARMOR_KINDS[it.kind] || (it.kind === 'power' ? 'power' : null));
+const armorKey = slot => (equipped[slot] ? equipped[slot].key : '');
+const armorList = () => ARMOR_SLOTS.map(armorKey);
+// Speed Boots and the Heavy Chestplate scale run speed; they stack.
+const speedMult = () => ARMOR_SLOTS.reduce((m, s) => m * (equipped[s] ? ITEMS[equipped[s].key].speed || 1 : 1), 1);
 const heldKey = () => (equipped[activeHand] ? equipped[activeHand].key : '');
-const heldItem = () => (heldKey() ? ITEMS[heldKey()] : FIST_ITEM);
+const weaponKey = () => (heldKey() && HAND_KINDS.includes(ITEMS[heldKey()].kind) ? heldKey() : '');
+const heldItem = () => (weaponKey() ? ITEMS[weaponKey()] : FIST_ITEM);
 const powerKey = () => (equipped.power ? equipped.power.key : '');
 const attackItem = w => {
   if (w === 'punch' || w === undefined) return FIST_ITEM;
@@ -1919,7 +2229,7 @@ const remoteBoosted = r => r.pw === 'freeze_power' && sectionOf(r.ty + PLAYER_H)
 // so swapping gear or walking in and out of the snow can't heal.
 function updateMaxHp() {
   const old = me.maxHp;
-  me.maxHp = BASE_HP + (equipped.head ? ITEMS[equipped.head.key].hp : 0) + (equipped.feet ? ITEMS[equipped.feet.key].hp : 0) +
+  me.maxHp = BASE_HP + ARMOR_SLOTS.reduce((n, s) => n + (equipped[s] ? ITEMS[equipped[s].key].hp : 0), 0) +
     (me.boosted ? FREEZE_HP : 0);
   if (!me.dead) me.hp = Math.max(1, Math.min(me.maxHp, me.hp + me.maxHp - old));
 }
@@ -2004,7 +2314,7 @@ function grantChestReward(kind = 'wood', adminBreak = false) {
     }
     inventory.splice(i, 1);
   }
-  const key = rollChestItem(kind);
+  const key = rollChestItem(kind, luckActive() ? LUCK_MULT : 1);
   const it = ITEMS[key];
   addItem(key);
   if (adminBreak) {
@@ -2018,11 +2328,48 @@ function grantChestReward(kind = 'wood', adminBreak = false) {
   showToast('GOT ' + it.name + '!' + (POWER_HELP[key] ? ' ' + POWER_HELP[key] : ''), rarityOf(it).text);
 }
 
+// Stackable items (like clovers) fill an existing stack before taking a new slot.
+const stackMax = key => ITEMS[key].stack || 1;
+const itemCount = key => inventory.reduce((n, i) => n + (i.key === key ? i.n || 1 : 0), 0);
+const canAdd = key => inventory.length < INVENTORY_SIZE || inventory.some(i => i.key === key && (i.n || 1) < stackMax(key));
+function removeItems(key, count) {
+  for (let i = inventory.length - 1; i >= 0 && count > 0; i--) {
+    const item = inventory[i];
+    if (item.key !== key) continue;
+    const take = Math.min(count, item.n || 1);
+    count -= take;
+    if ((item.n || 1) - take > 0) {
+      item.n -= take;
+    } else {
+      for (const slot of EQUIP_SLOTS) if (equipped[slot] === item) toggleEquip(item);
+      inventory.splice(i, 1);
+    }
+  }
+}
+
+function useItem(item) {
+  if (ITEMS[item.key].kind !== 'consumable') return;
+  if (item.key === 'luck_potion') {
+    me.luckUntil = Math.max(performance.now(), me.luckUntil) + LUCK_TIME * 1000;
+    showToast('LUCK POTION: ' + LUCK_MULT + 'X CHEST LUCK FOR 2 MIN', ITEMS.luck_potion.color);
+    emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 14, ITEMS.luck_potion.color, 60, 0.6);
+  }
+  removeItems(item.key, 1);
+}
+
 function addItem(key) {
-  const item = { key };
+  if (stackMax(key) > 1) {
+    const stack = inventory.find(i => i.key === key && (i.n || 1) < stackMax(key));
+    if (stack) {
+      stack.n = (stack.n || 1) + 1;
+      return stack;
+    }
+  }
+  const item = stackMax(key) > 1 ? { key, n: 1 } : { key };
   inventory.push(item);
-  const slot = slotFor(ITEMS[key]);
-  if (slot && (slot === 'hand' ? !equipped.hand || !equipped.hand2 : !equipped[slot])) toggleEquip(item);
+  const it = ITEMS[key], slot = slotFor(it);
+  const autoEquip = it.kind !== 'material' || it.autoHold;
+  if (slot && autoEquip && (slot === 'hand' ? !equipped.hand || !equipped.hand2 : !equipped[slot])) toggleEquip(item);
   return item;
 }
 
@@ -2081,8 +2428,9 @@ const ADMIN_LIST = { x: ADMIN_PANEL.x + 6, y: ADMIN_PANEL.y + 56, w: ADMIN_PANEL
 const ADMIN_ROW = 18, ADMIN_HEADER = 13, ADMIN_SEARCH_MAX = 20;
 const ADMIN_CATEGORIES = [
   { label: 'WEAPONS', test: it => HAND_KINDS.includes(it.kind) },
-  { label: 'ARMOR', test: it => it.kind === 'helmet' || it.kind === 'boots' },
+  { label: 'ARMOR', test: it => !!ARMOR_KINDS[it.kind] },
   { label: 'POWER', test: it => it.kind === 'power' },
+  { label: 'MATERIALS/ITEMS', test: it => it.kind === 'material' || it.kind === 'consumable' },
 ];
 
 function toggleAdmin() {
@@ -2091,7 +2439,7 @@ function toggleAdmin() {
   adminSearchFocus = false;
   adminPass = '';
   adminPassError = 0;
-  if (adminOpen) inventoryOpen = pickerOpen = false;
+  if (adminOpen) inventoryOpen = pickerOpen = craftOpen = storageOpen = false;
 }
 
 function adminPasswordKey(e) {
@@ -2180,7 +2528,7 @@ function adminSearchKey(e) {
 }
 
 function adminGive(key) {
-  if (inventory.length >= INVENTORY_SIZE) {
+  if (!canAdd(key)) {
     showToast('INVENTORY FULL');
     return;
   }
@@ -2384,6 +2732,7 @@ const CHEST_SPRITE = [
 const CHEST_PAL = { o: '#2a1608', h: '#d29a5a', w: '#a8672f', d: '#7a4520', m: '#6a6a78', y: '#f2c14e' };
 const SILVER_PAL = { o: '#1a1c28', h: '#f4f7fc', w: '#c2c8d4', d: '#868ea0', m: '#4e5466', y: '#4ae8f0' };
 const STONE_PAL = { o: '#1e1e26', h: '#b4b4be', w: '#8a8a96', d: '#5c5c68', m: '#f2c14e', y: '#fff3a0' };
+const ARMOR_PAL = { o: '#1c0e12', h: '#c25a5e', w: '#8e2e34', d: '#5e1a20', m: '#c8ccd6', y: '#f2f4f8' };
 const ICE_PAL = { o: '#1a4a6a', h: '#f4ffff', w: '#b4ecfa', d: '#78c4e2', m: '#e2fbff', y: '#4ae8f0' };
 // Silver chests are tougher, and only hits stronger than a stone sword can damage them.
 const SILVER_CHEST_HP = 100;
@@ -2395,7 +2744,13 @@ const CHEST_KINDS = {
   silver: { hp: SILVER_CHEST_HP, pal: SILVER_PAL, fx: ['#c2c8d4', '#4ae8f0'], minDamage: SILVER_MIN_DAMAGE, silverOk: true },
   stone: { hp: 300, pal: STONE_PAL, fx: ['#8a8a96', '#f2c14e'], minDamage: 21 },
   ice: { hp: 1000, pal: ICE_PAL, fx: ['#d8f6ff', '#4ae8f0'], needsItem: 'frozen_pickaxe', w: 20, h: 16 },
+  armor: { hp: 100, pal: ARMOR_PAL, fx: ['#7a2a30', '#c8ccd6'], minDamage: 9 },
 };
+// The Armorer's Chest keeps one or two in every biome; the number is rerolled each time one breaks.
+const ARMOR_BIOMES = [[0, 1], [2], [3], [4], [BIOME_SECTION, BIOME_SECTION + 1]];
+const armorBiomeOf = sec => ARMOR_BIOMES.findIndex(b => b.includes(sec));
+const rollArmorTarget = () => (Math.random() < 0.5 ? 1 : 2);
+const armorTargets = ARMOR_BIOMES.map(rollArmorTarget);
 const isChestKind = k => Object.prototype.hasOwnProperty.call(CHEST_KINDS, k);
 // How many of each chest kind every map section keeps (section 0 is the bottom).
 const CHEST_MIX = [
@@ -2456,6 +2811,12 @@ function chestHostId() {
 }
 const isChestHost = () => chestHostId() === myPeerId;
 
+// Keeps random chests and clovers off the bench, the bucket and the storage chest.
+const reservedSpot = (x, y, w, h) =>
+  rectsOverlap(x, y, w, h, BENCH.x - 10, BENCH.y - 10, BENCH.w + 20, BENCH.h + 10)
+  || rectsOverlap(x, y, w, h, VAULT.x - 10, VAULT.y - 10, VAULT.w + 20, VAULT.h + 10)
+  || rectsOverlap(x, y, w, h, BUCKET_SPOT.x - 8, BUCKET_SPOT.y - 4, BUCKET_W + 16, BUCKET_H + 4);
+
 function randomChestSpot(section, w = CHEST_W, h = CHEST_H) {
   const surfaces = CHEST_SURFACES.filter(s => sectionOf(s.y) === section && s.w >= w + 8);
   if (!surfaces.length) return null;
@@ -2470,6 +2831,7 @@ function randomChestSpot(section, w = CHEST_W, h = CHEST_H) {
     const x = Math.round(surf.x + 2 + Math.random() * (surf.w - w - 4));
     const y = surf.y - h;
     if (overlaps(x, y, w, h)) continue;
+    if (reservedSpot(x, y, w, h)) continue;
     if (chests.some(c => Math.abs(c.x - x) < 30 && Math.abs(c.y - y) < 20)) continue;
     return { x, y };
   }
@@ -2480,7 +2842,13 @@ function broadcastChests() {
   lastChestBroadcast = performance.now();
   chestsDirty = false;
   if (!sendChests) return;
-  try { sendChests({ l: chests.map(c => [c.id, c.x, c.y, c.hp, c.k]), b: biomeOpen ? Math.max(1, Math.round(biomeCloseAt - performance.now())) : 0 }); } catch (e) { /* ignore */ }
+  try {
+    sendChests({
+      l: chests.map(c => [c.id, c.x, c.y, c.hp, c.k]),
+      b: biomeOpen ? Math.max(1, Math.round(biomeCloseAt - performance.now())) : 0,
+      cv: clovers.map(c => [c.id, c.x, c.y, c.hp]),
+    });
+  } catch (e) { /* ignore */ }
 }
 
 function tickChests() {
@@ -2525,6 +2893,24 @@ function tickChests() {
       }
     }
   }
+  ARMOR_BIOMES.forEach((secs, b) => {
+    const inBiome = secs[0] >= BIOME_SECTION;
+    if (inBiome && !biomeOpen) return;
+    let have = chests.filter(c => chestKind(c) === 'armor' && armorBiomeOf(chestSection(c)) === b).length;
+    while (have < armorTargets[b]) {
+      let spot = null;
+      if (inBiome) {
+        const free = BIOME_CHEST_SPOTS.filter(sp => !chests.some(c => c.x === sp.x && c.y === sp.y));
+        if (free.length) spot = free[Math.floor(Math.random() * free.length)];
+      } else {
+        spot = randomChestSpot(secs[Math.floor(Math.random() * secs.length)]);
+      }
+      if (!spot) break;
+      chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'armor', hp: CHEST_KINDS.armor.hp, flash: 0 });
+      have++;
+      added = true;
+    }
+  });
   // Rare ice chest: at most one, with a 1 in 5 chance each minute while there isn't one.
   if (!nextIceRoll) nextIceRoll = now + ICE_ROLL_INTERVAL * 1000;
   if (now >= nextIceRoll) {
@@ -2538,7 +2924,386 @@ function tickChests() {
       }
     }
   }
+  if (tickClovers(now)) added = true;
   if (added || chestsDirty || now - lastChestBroadcast > 1000) broadcastChests();
+}
+
+// Clovers: small, easy-to-miss pickups. The chest host keeps a few of them
+// on the lower layers and respawns picked ones after a while.
+const CLOVER_MAX = 3, CLOVER_W = 5, CLOVER_H = 4;
+const CLOVER_SECTIONS = [0, 1, 2];
+const CLOVER_RESPAWN_MIN = 15, CLOVER_RESPAWN_MAX = 45;
+let clovers = [];
+let nextCloverAt = 0;
+const CLOVER_HP = 5;
+let sendClover = null;
+
+function randomCloverSpot() {
+  const surfaces = CHEST_SURFACES.filter(s => CLOVER_SECTIONS.includes(sectionOf(s.y)));
+  for (let tries = 0; tries < 30; tries++) {
+    const s = surfaces[Math.floor(Math.random() * surfaces.length)];
+    const x = Math.round(s.x + 2 + Math.random() * (s.w - CLOVER_W - 4));
+    const y = s.y - CLOVER_H;
+    if (overlaps(x, y, CLOVER_W, CLOVER_H)) continue;
+    if (reservedSpot(x, y, CLOVER_W, CLOVER_H)) continue;
+    if (chests.some(c => rectsOverlap(x - 2, y, CLOVER_W + 4, CLOVER_H, c.x, c.y, chestW(c), chestH(c)))) continue;
+    if (clovers.some(c => Math.abs(c.x - x) < 40 && Math.abs(c.y - y) < 20)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+function tickClovers(now) {
+  if (clovers.length >= CLOVER_MAX || now < nextCloverAt) return false;
+  let added = false;
+  // The first fill is instant; after that one clover regrows at a time.
+  const n = nextCloverAt ? 1 : CLOVER_MAX - clovers.length;
+  for (let i = 0; i < n; i++) {
+    const spot = randomCloverSpot();
+    if (!spot) break;
+    clovers.push({ id: Math.random().toString(36).slice(2, 10), ...spot, hp: CLOVER_HP });
+    added = true;
+  }
+  nextCloverAt = now + (CLOVER_RESPAWN_MIN + Math.random() * (CLOVER_RESPAWN_MAX - CLOVER_RESPAWN_MIN)) * 1000;
+  return added;
+}
+
+// Bucket: always waiting on the platform closest to the middle of the snow
+// biome. Anyone without a bucket can walk into it to take one.
+const BUCKET_W = 8, BUCKET_H = 8;
+const BUCKET_SPOT = (() => {
+  const midX = WORLD_W / 2, midY = WORLD_H - (SNOW_SECTION + 0.5) * SECTION_H;
+  const s = CHEST_SURFACES.filter(o => sectionOf(o.y) === SNOW_SECTION)
+    .sort((a, b) => Math.hypot(a.x + a.w / 2 - midX, a.y - midY) - Math.hypot(b.x + b.w / 2 - midX, b.y - midY))[0];
+  const x = Math.round(Math.max(s.x + 2, Math.min(s.x + s.w - BUCKET_W - 2, midX - BUCKET_W / 2)));
+  return { x, y: s.y - BUCKET_H };
+})();
+const hasBucket = () => BUCKET_KEYS.some(k => itemCount(k) > 0);
+const feetSection = () => sectionOf(me.y + PLAYER_H - 1);
+
+function updateBucket(dt) {
+  if (me.dead) return;
+  if (!hasBucket() && rectsOverlap(me.x, me.y, PLAYER_W, PLAYER_H, BUCKET_SPOT.x, BUCKET_SPOT.y, BUCKET_W, BUCKET_H)) {
+    if (!canAdd('bucket')) {
+      if (!me.bucketFullWarned) showToast('INVENTORY FULL', '#ff8a8a');
+      me.bucketFullWarned = true;
+    } else {
+      addItem('bucket');
+      showToast('GOT A BUCKET!', ITEMS.bucket.color);
+    }
+  } else {
+    me.bucketFullWarned = false;
+  }
+  const held = equipped[activeHand];
+  if (held && held.key === 'bucket' && feetSection() === SNOW_SECTION) {
+    me.snowFill += dt;
+    if (me.snowFill >= SNOW_FILL_TIME) {
+      me.snowFill = 0;
+      held.key = 'snow_bucket';
+      held.melt = 0;
+      broadcastState();
+    }
+  } else {
+    me.snowFill = 0;
+  }
+  if (held && held.key === 'snow_bucket' && feetSection() !== SNOW_SECTION) {
+    held.melt = (held.melt || 0) + dt * MELT_TIME / (feetSection() === VOLCANO_SECTION ? MELT_TIME_LAVA : MELT_TIME);
+    if (held.melt >= MELT_TIME) {
+      held.key = 'water_bucket';
+      delete held.melt;
+      broadcastState();
+    }
+  }
+}
+
+function dumpWater() {
+  const item = inventory.find(i => i.key === 'water_bucket');
+  if (!item) {
+    showToast('NO WATER BUCKET', '#ff8a8a');
+    return;
+  }
+  if (!canAdd('water')) {
+    showToast('INVENTORY FULL', '#ff8a8a');
+    return;
+  }
+  item.key = 'bucket';
+  addItem('water');
+  broadcastState();
+  showToast('+1 WATER (' + itemCount('water') + ')', ITEMS.water.color);
+}
+
+function drawBucketSpot(cx, cy) {
+  const x = Math.round(BUCKET_SPOT.x - cx), y = Math.round(BUCKET_SPOT.y - cy);
+  if (x < -12 || x > VIEW_W + 12 || y < -12 || y > VIEW_H + 12) return;
+  const o = '#140c1c', b = ITEMS.bucket.color;
+  ctx.fillStyle = o;
+  ctx.fillRect(x + 2, y, 4, 1);
+  ctx.fillRect(x + 1, y + 1, 1, 1);
+  ctx.fillRect(x + 6, y + 1, 1, 1);
+  ctx.fillRect(x, y + 2, 8, 6);
+  ctx.fillStyle = b;
+  ctx.fillRect(x + 1, y + 3, 6, 4);
+  ctx.fillStyle = shade(b, 0.35);
+  ctx.fillRect(x + 1, y + 3, 1, 4);
+  ctx.fillStyle = '#2a2a36';
+  ctx.fillRect(x + 1, y + 3, 6, 1);
+  if (!hasBucket() && Math.abs(me.x + PLAYER_W / 2 - BUCKET_SPOT.x - 4) < 60 && Math.abs(me.y + PLAYER_H - BUCKET_SPOT.y - BUCKET_H) < 30) {
+    drawText(ctx, 'BUCKET', x + 4, y - 10, 1, '#ffe66d', 'center', '#140c1c');
+  }
+}
+
+// The host applies clover hits; whoever lands the last one gets the clover.
+function hostHitClover(cloverId, by, msg) {
+  const c = clovers.find(c => c.id === cloverId);
+  if (!c) return;
+  if (by !== myPeerId) {
+    const r = remotes.get(by);
+    if (!r || Math.abs(r.tx + PLAYER_W / 2 - (c.x + CLOVER_W / 2)) > 50 || Math.abs(r.ty + PLAYER_H - (c.y + CLOVER_H)) > 30) return;
+  }
+  const it = attackItem(msg && msg.w);
+  const dmg = it ? itemDamage(it, msg, true) : 0;
+  if (!(dmg > 0)) return;
+  c.hp = Math.max(0, (c.hp || CLOVER_HP) - dmg);
+  cloverHitFx(c, dmg);
+  if (c.hp > 0) {
+    broadcastChests();
+    return;
+  }
+  clovers = clovers.filter(o => o !== c);
+  const now = performance.now();
+  nextCloverAt = Math.max(nextCloverAt, now + CLOVER_RESPAWN_MIN * 1000);
+  broadcastChests();
+  if (by === myPeerId) gotClover(c);
+  else if (sendClover) try { sendClover({ got: c.id, x: c.x, y: c.y }, by); } catch (e) { /* ignore */ }
+}
+
+function gotClover(c) {
+  if (!canAdd('clover')) {
+    showToast('INVENTORY FULL', '#ff8a8a');
+    return;
+  }
+  addItem('clover');
+  showToast('FOUND A CLOVER! (' + itemCount('clover') + ')', '#6ad46a');
+  if (Number.isFinite(c.x) && Number.isFinite(c.y)) emit(c.x + CLOVER_W / 2, c.y + CLOVER_H / 2, 8, '#6ad46a', 40, 0.4);
+}
+
+function onCloverMsg(id, d) {
+  if (!d) return;
+  if (typeof d.hit === 'string' && isChestHost()) hostHitClover(d.hit, id, d);
+  if (typeof d.got === 'string' && id === chestHostId()) gotClover(d);
+}
+
+function cloverHitFx(c, amount) {
+  c.flash = HURT_FLASH;
+  addDamageNumber(c.x + CLOVER_W / 2 - PLAYER_W / 2, c.y - 4, amount);
+}
+
+// Called from melee attacks with the same reach box used for players and chests.
+function hitClovers(hx, hy, reach, msg) {
+  for (const c of [...clovers]) {
+    if (!rectsOverlap(hx, hy, reach, PLAYER_H, c.x - 1, c.y - 2, CLOVER_W + 2, CLOVER_H + 2)) continue;
+    if (!canAdd('clover')) {
+      showToast('INVENTORY FULL', '#ff8a8a');
+      continue;
+    }
+    if (isChestHost()) hostHitClover(c.id, myPeerId, msg);
+    else if (sendClover) try { sendClover({ ...msg, hit: c.id }, chestHostId()); } catch (e) { /* ignore */ }
+  }
+}
+
+function drawClovers(cx, cy) {
+  for (const c of clovers) {
+    const x = Math.round(c.x - cx), y = Math.round(c.y - cy);
+    if (x < -8 || x > VIEW_W + 8 || y < -8 || y > VIEW_H + 8) continue;
+    if (c.flash > 0) {
+      c.flash = Math.max(0, c.flash - 1 / 60);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x - 1, y - 1, CLOVER_W + 2, CLOVER_H + 2);
+    }
+    ctx.fillStyle = '#2f8a2a';
+    ctx.fillRect(x, y, 2, 2);
+    ctx.fillRect(x + 3, y, 2, 2);
+    ctx.fillRect(x, y + 2, 2, 1);
+    ctx.fillRect(x + 3, y + 2, 2, 1);
+    ctx.fillStyle = '#5ec04a';
+    ctx.fillRect(x + 2, y + 1, 1, 1);
+    ctx.fillStyle = '#24661f';
+    ctx.fillRect(x + 2, y + 2, 1, 2);
+  }
+}
+
+function drawBench(cx, cy) {
+  const x = Math.round(BENCH.x - cx), y = Math.round(BENCH.y - cy);
+  if (x > VIEW_W + 10 || x + BENCH.w < -10 || y > VIEW_H + 20 || y + BENCH.h < -20) return;
+  const o = '#2a1608';
+  // Legs and crossbar
+  ctx.fillStyle = o;
+  ctx.fillRect(x + 1, y + 3, 4, BENCH.h - 3);
+  ctx.fillRect(x + BENCH.w - 5, y + 3, 4, BENCH.h - 3);
+  ctx.fillStyle = '#7a4a24';
+  ctx.fillRect(x + 2, y + 4, 2, BENCH.h - 4);
+  ctx.fillRect(x + BENCH.w - 4, y + 4, 2, BENCH.h - 4);
+  ctx.fillStyle = o;
+  ctx.fillRect(x + 4, y + 8, BENCH.w - 8, 3);
+  ctx.fillStyle = '#8a5a2e';
+  ctx.fillRect(x + 4, y + 9, BENCH.w - 8, 1);
+  // Table top
+  ctx.fillStyle = o;
+  ctx.fillRect(x - 1, y - 1, BENCH.w + 2, 5);
+  ctx.fillStyle = '#a8723e';
+  ctx.fillRect(x, y, BENCH.w, 3);
+  ctx.fillStyle = '#d29a5a';
+  ctx.fillRect(x, y, BENCH.w, 1);
+  // Hammer
+  ctx.fillStyle = o;
+  ctx.fillRect(x + 3, y - 5, 6, 4);
+  ctx.fillStyle = '#9aa0b0';
+  ctx.fillRect(x + 4, y - 4, 4, 2);
+  ctx.fillStyle = '#6a4a2a';
+  ctx.fillRect(x + 8, y - 3, 6, 1);
+  // Little green bottle
+  ctx.fillStyle = o;
+  ctx.fillRect(x + 18, y - 7, 5, 6);
+  ctx.fillStyle = '#4ae86a';
+  ctx.fillRect(x + 19, y - 5, 3, 3);
+  ctx.fillStyle = '#e8e8e8';
+  ctx.fillRect(x + 20, y - 7, 1, 2);
+  if (nearBench() && !craftOpen && !me.dead) {
+    drawText(ctx, 'E: CRAFT', x + BENCH.w / 2, y - 32, 1, '#ffe66d', 'center', '#140c1c');
+  }
+}
+
+function drawVault(cx, cy) {
+  const x = Math.round(VAULT.x - cx), y = Math.round(VAULT.y - cy);
+  if (x > VIEW_W + 10 || x + VAULT.w < -10 || y > VIEW_H + 20 || y + VAULT.h < -20) return;
+  const o = '#140c1c', body = '#3a5a8a', lid = '#4a72a8', trim = '#d4a83a';
+  ctx.fillStyle = o;
+  ctx.fillRect(x, y, VAULT.w, VAULT.h);
+  ctx.fillStyle = body;
+  ctx.fillRect(x + 1, y + 7, VAULT.w - 2, VAULT.h - 8);
+  ctx.fillStyle = lid;
+  ctx.fillRect(x + 1, y + 1, VAULT.w - 2, 5);
+  ctx.fillStyle = shade(lid, 0.3);
+  ctx.fillRect(x + 1, y + 1, VAULT.w - 2, 1);
+  ctx.fillStyle = trim;
+  ctx.fillRect(x + 1, y + 6, VAULT.w - 2, 1);
+  ctx.fillRect(x + 3, y + 1, 1, VAULT.h - 2);
+  ctx.fillRect(x + VAULT.w - 4, y + 1, 1, VAULT.h - 2);
+  ctx.fillRect(x + VAULT.w / 2 - 2, y + 5, 4, 5);
+  ctx.fillStyle = o;
+  ctx.fillRect(x + VAULT.w / 2 - 1, y + 7, 2, 2);
+  if (nearVault() && !storageOpen && !me.dead) {
+    drawText(ctx, 'E: STORAGE', x + VAULT.w / 2, y - 32, 1, '#ffe66d', 'center', '#140c1c');
+  }
+}
+
+function drawItemSlot(s, item, highlight) {
+  const it = ITEMS[item.key];
+  ctx.fillStyle = highlight ? '#ffffff' : shade(rarityOf(it).bg, 0.35);
+  ctx.fillRect(s.x, s.y, s.w, s.h);
+  ctx.fillStyle = rarityOf(it).bg;
+  ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+  drawItemIcon(it, s.x + 2, s.y + 2);
+  if (item.n > 1) drawText(ctx, String(item.n), s.x + s.w, s.y + s.h - 5, 1, '#ffffff', 'right', '#140c1c');
+}
+
+function drawStoragePanel() {
+  const p = STORAGE_PANEL;
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(p.x - 1, p.y - 1, p.w + 2, p.h + 2);
+  ctx.fillStyle = '#241a33';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  drawText(ctx, 'STORAGE CHEST', p.x + 6, p.y + 5, 1, '#ffe66d');
+  drawText(ctx, 'CLICK AN ITEM TO MOVE IT', p.x + p.w - 6, p.y + 5, 1, '#8a8aa0', 'right');
+  let hovered = null;
+  for (const [side, list, cap, label] of [['inv', inventory, INVENTORY_SIZE, 'INVENTORY'], ['box', storage, STORAGE_SIZE, 'SAVED (' + me.name + ')']]) {
+    const g = storageGrid(side);
+    drawText(ctx, label, g.x, g.y - 11, 1, side === 'box' ? '#7ab4ff' : '#b9a8e0');
+    drawText(ctx, list.length + '/' + cap, g.x + 178, g.y - 11, 1, '#ffffff', 'right');
+    for (let i = 0; i < cap; i++) {
+      const s = storageSlotRect(side, i), isOver = over(s);
+      const item = list[i];
+      if (item) {
+        drawItemSlot(s, item, isOver);
+        if (isOver) hovered = item;
+        if (side === 'inv' && EQUIP_SLOTS.some(slot => equipped[slot] === item)) {
+          ctx.fillStyle = '#ffe66d';
+          ctx.fillRect(s.x, s.y, 3, 3);
+        }
+      } else {
+        ctx.fillStyle = isOver ? '#5a4a7a' : '#3a2f4a';
+        ctx.fillRect(s.x, s.y, s.w, s.h);
+        ctx.fillStyle = '#1a1226';
+        ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+      }
+    }
+  }
+  if (hovered) {
+    const it = ITEMS[hovered.key], rar = rarityOf(it);
+    const text = it.name + ' - ' + rar.label;
+    const w = textWidth(text, 1) + 8, tx = Math.min(VIEW_W - w - 2, mouse.x + 8), ty = Math.min(VIEW_H - 14, mouse.y + 8);
+    ctx.fillStyle = '#140c1c';
+    ctx.fillRect(tx, ty, w, 12);
+    drawText(ctx, text, tx + 4, ty + 3, 1, rar.text);
+  }
+}
+
+function drawCraftPanel() {
+  const p = CRAFT_PANEL;
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(p.x - 1, p.y - 1, p.w + 2, p.h + 2);
+  ctx.fillStyle = '#241a33';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  drawText(ctx, 'CRAFTING BENCH', p.x + 6, p.y + 5, 1, '#ffe66d');
+  drawText(ctx, 'E / SHIFT: CLOSE', p.x + p.w - 6, p.y + 5, 1, '#8a8aa0', 'right');
+
+  const r = RECIPES[0], it = ITEMS[r.key];
+  const box = { x: p.x + 6, y: p.y + 18, w: p.w - 12, h: 28 };
+  ctx.fillStyle = '#1a1226';
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  ctx.fillStyle = rarityOf(it).bg;
+  ctx.fillRect(box.x + 4, box.y + 4, 20, 20);
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(box.x + 5, box.y + 5, 18, 18);
+  drawItemIcon(it, box.x + 8, box.y + 8);
+  drawText(ctx, it.name, box.x + 30, box.y + 5, 1, rarityOf(it).text);
+  drawText(ctx, LUCK_MULT + 'X CHEST LUCK FOR 2 MINUTES', box.x + 30, box.y + 16, 1, '#c8c8d8');
+
+  drawText(ctx, 'NEEDS', p.x + 6, p.y + 52, 1, '#8a8aa0');
+  r.needs.forEach(([key, n], i) => {
+    const ix = p.x + 6 + i * 84, iy = p.y + 62;
+    const have = itemCount(key), ok = have >= n;
+    const ing = ITEMS[key];
+    ctx.fillStyle = ok ? '#3a6a3a' : '#5a2a2a';
+    ctx.fillRect(ix, iy, 16, 16);
+    ctx.fillStyle = '#140c1c';
+    ctx.fillRect(ix + 1, iy + 1, 14, 14);
+    drawItemIcon(ing, ix + 2, iy + 2);
+    drawText(ctx, n + ' ' + ing.name, ix + 20, iy + 1, 1, '#e8e8e8');
+    drawText(ctx, have + '/' + n, ix + 20, iy + 10, 1, ok ? '#6ad46a' : '#ff8a8a');
+  });
+  craftButton(CRAFT_BTN, 'CRAFT', canCraft(r));
+
+  ctx.fillStyle = '#3a2f4a';
+  ctx.fillRect(p.x + 6, p.y + 88, p.w - 12, 1);
+  const wb = ITEMS.water_bucket, hasWater = itemCount('water_bucket') > 0;
+  const iy = p.y + 98;
+  ctx.fillStyle = hasWater ? '#3a6a3a' : '#3a3a4a';
+  ctx.fillRect(p.x + 6, iy, 16, 16);
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(p.x + 7, iy + 1, 14, 14);
+  drawItemIcon(wb, p.x + 8, iy + 2);
+  drawText(ctx, 'DUMP ' + wb.name, p.x + 26, iy + 1, 1, '#e8e8e8');
+  drawText(ctx, 'GET 1 WATER, KEEP THE BUCKET', p.x + 26, iy + 10, 1, '#8a8aa0');
+  craftButton(DUMP_BTN, 'DUMP', hasWater);
+}
+
+function craftButton(b, label, ready) {
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2);
+  ctx.fillStyle = ready ? (over(b) ? '#5ac85a' : '#3a9a3a') : '#3a3a4a';
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  drawText(ctx, label, b.x + b.w / 2, b.y + 5, 1, ready ? '#ffffff' : '#7a7a8a', 'center');
 }
 
 function chestHitFx(c, amount) {
@@ -2556,6 +3321,7 @@ function chestBlockedFx(c, msg) {
   if (rule.needsItem) showToast('NEEDS A FROZEN PICKAXE', '#b4ecfa');
   else if (chargeHelps) showToast('MAYBE TRY HOLDING RIGHT CLICK');
   else if (kind === 'stone') showToast('NEED A HIT THAT DOES MORE THAN 20 DAMAGE');
+  else if (kind === 'armor') showToast('NEED A HIT THAT DOES 9 OR MORE DAMAGE');
   else showToast('NEED A WEAPON STRONGER THAN A STONE SWORD');
 }
 
@@ -2613,6 +3379,20 @@ function onChests(id, d) {
     chests.push(c);
   }
   chestsKnown = true;
+  if (Array.isArray(d.cv) && d.cv.length <= 10) {
+    const oldClovers = new Map(clovers.map(c => [c.id, c]));
+    clovers = d.cv
+      .filter(e => Array.isArray(e) && typeof e[0] === 'string' && Number.isFinite(e[1]) && Number.isFinite(e[2]))
+      .map(e => {
+        const c = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp: Math.max(1, Math.min(CLOVER_HP, Number(e[3]) || CLOVER_HP)), flash: 0 };
+        const prev = oldClovers.get(c.id);
+        if (prev) {
+          c.flash = prev.flash || 0;
+          if (c.hp < prev.hp) cloverHitFx(c, prev.hp - c.hp);
+        }
+        return c;
+      });
+  }
   const left = Number(d.b) || 0;
   if (left > 0) {
     if (!biomeOpen) openBiome(true, left);
@@ -2775,6 +3555,10 @@ function onChestBreak(d, fromId) {
   const x = c ? c.x : Number(d.x) || 0, y = c ? c.y : Number(d.y) || 0;
   chests = chests.filter(o => o.id !== d.id);
   const kind = c ? chestKind(c) : isChestKind(d.k) ? d.k : chestKind({ y });
+  if (kind === 'armor' && fromId === myPeerId) {
+    const b = armorBiomeOf(sectionOf(y + CHEST_H));
+    if (b >= 0) armorTargets[b] = rollArmorTarget();
+  }
   const [fx1, fx2] = CHEST_KINDS[kind].fx;
   const cx = x + (CHEST_KINDS[kind].w || CHEST_W) / 2, cy = y + (CHEST_KINDS[kind].h || CHEST_H) / 2;
   emit(cx, cy, kind === 'ice' ? 40 : 18, fx1, 90, 0.6);
@@ -2847,13 +3631,17 @@ function leaveGame() {
   const leaving = room ? Promise.resolve(room.leave()).catch(() => {}) : Promise.resolve();
   room = null;
   sendState = sendHit = sendDamage = null;
-  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = null;
+  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = sendClover = null;
+  craftOpen = storageOpen = false;
   state = 'leaving';
   Promise.race([leaving, new Promise(r => setTimeout(r, 800))]).then(() => location.reload());
 }
 
 function updateMe(dt) {
   syncFreezeBoost();
+  if (craftOpen && !nearBench()) craftOpen = false;
+  if (storageOpen && !nearVault()) storageOpen = false;
+  updateBucket(dt);
   me.flash = Math.max(0, me.flash - dt);
   me.punchT = Math.max(0, me.punchT - dt);
   me.punchCd = Math.max(0, me.punchCd - dt);
@@ -2914,6 +3702,7 @@ function startGame() {
   nameInput.blur();
   me.name = nameInput.value.trim() || DEFAULT_NAME;
   saveProfile();
+  loadStorage();
   state = 'game';
   me.joinedAt = Date.now();
   joinedPerf = performance.now();
@@ -3073,6 +3862,14 @@ const ICONS = {
     '...oooooo...', '..obbbbbbo..', '.obbbbbbrro.', 'obbbbbbrrbbo', 'obbbbbrrbbbo', 'obbsbrrbbbbo',
     'obbbrrbbbbbo', 'obbrrbbbbbbo', 'obrrbbbbbbo.', '.orrbbbbbbo.', '..obbbbbbo..', '...oooooo...',
   ],
+  chestplate: [
+    '..oo....oo..', '.obbo..obbo.', 'obhbboobbbbo', 'obhbbbbbbbbo', 'obhbbbbbbbbo', '.ohbbbbbbbo.',
+    '..obbbbbbo..', '..obbbbbbo..', '..obbbbbbo..', '..obbbbbbo..', '...oooooo...', '............',
+  ],
+  leggings: [
+    '..oooooooo..', '..obhbbbbo..', '..obhbbbbo..', '..obbooobo..', '..obbo.obbo.', '..obho.obbo.',
+    '..obho.obbo.', '..obbo.obbo.', '..obbo.obbo.', '..obbo.obbo.', '..oooo.oooo.', '............',
+  ],
   freeze: [
     '.....oo.....', '..o..bb..o..', '.obo.bb.obo.', '..obobbobo..', '...obhhbo...', 'obbbbhhbbbbo',
     'obbbbhhbbbbo', '...obhhbo...', '..obobbobo..', '.obo.bb.obo.', '..o..bb..o..', '.....oo.....',
@@ -3085,10 +3882,27 @@ const ICONS = {
     '.oooooooo...', 'ohhhhhhhho..', 'obbbbbbbbo..', 'obbbbbbbbo..', '.oooogoooo..', '....ogo.....',
     '....ogo.....', '....ogo.....', '....ogo.....', '....ogo.....', '....ogo.....', '.....o......',
   ],
+  clover: [
+    '............', '..oo..oo....', '.obbooobbo..', '.obhbobhbo..', '..obbobbo...', '.oooogoooo..',
+    'obbbbobbbbo.', 'obhbo.obhbo.', '.oo..g..oo..', '.....g......', '......g.....', '............',
+  ],
+  potion: [
+    '....oooo....', '....osso....', '.....oo.....', '....obbo....', '...obbbbo...', '..obhbbbbo..',
+    '.obhbbbbbbo.', '.obhbbbbbbo.', '.obbbbbbbbo.', '.obbbbbbbbo.', '..obbbbbbo..', '...oooooo...',
+  ],
+  bucket: [
+    '....oooo....', '...o....o...', '..o......o..', 'oooooooooooo', 'ohwwwwwwwwbo', '.ohbbbbbbbo.',
+    '.ohbbbbbbbo.', '.ohbbbbbbbo.', '..ohbbbbbo..', '..ohbbbbbo..', '..oooooooo..', '............',
+  ],
+  water: [
+    '.....oo.....', '....obbo....', '....obbo....', '...obbbbo...', '...obbbbo...', '..obhbbbbo..',
+    '..obhbbbbo..', '.obhbbbbbbo.', '.obbbbbbbbo.', '.obbbbbbbbo.', '..obbbbbbo..', '...oooooo...',
+  ],
 };
+const iconPalette = it => ({ o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8', r: '#ff4a4a', f: '#ff9a3d', w: it.fill || '#2a2a36' });
 function drawItemIcon(it, x, y) {
   const map = ICONS[it.icon || it.style || it.kind];
-  const pal = { o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8', r: '#ff4a4a', f: '#ff9a3d' };
+  const pal = iconPalette(it);
   for (let r = 0; r < 12; r++) {
     for (let c = 0; c < 12; c++) {
       const ch = map[r][c];
@@ -3104,8 +3918,15 @@ function itemDescription(it) {
   if (it.kind === 'bow') return it.damage + ' DMG / ' + it.charged + ' CHARGED';
   if (it.kind === 'shuriken') return it.damage + ' DMG X5 / RIGHT CLICK: X' + SHURIKEN_BURST_COUNT;
   if (it.kind === 'laser') return LASER_DPS + ' DMG/S / RIGHT CLICK: REFUEL';
-  if (it.hp) return '+' + it.hp + ' MAX HP';
+  if (ARMOR_KINDS[it.kind]) {
+    const parts = [];
+    if (it.hp) parts.push('+' + it.hp + ' MAX HP');
+    if (it.speed) parts.push(it.speed > 1 ? 'RUN ' + Math.round((it.speed - 1) * 100) + '% FASTER' : it.speed + 'X SPEED');
+    return parts.join(' / ');
+  }
   if (it.kind === 'power') return POWER_HELP[Object.keys(ITEMS).find(k => ITEMS[k] === it)] || '';
+  if (it.desc) return it.desc;
+  if (it === ITEMS.luck_potion) return 'DOUBLE CLICK: ' + LUCK_MULT + 'X CHEST LUCK FOR 2 MIN';
   return '';
 }
 
@@ -3194,7 +4015,7 @@ function drawHud() {
   if (maxAirJumps() > 1) drawText(ctx, String(me.airJumps), VIEW_W - 11, 8, 1, me.airJumps > 0 ? '#140c1c' : '#ffffff', 'center');
 
   // Held weapon + dash
-  const it = heldItem();
+  const it = heldKey() ? ITEMS[heldKey()] : FIST_ITEM;
   const label = it.name;
   const hw = Math.max(82, textWidth(label, 1) + 32);
   ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
@@ -3235,6 +4056,11 @@ function drawHud() {
     if (radarActive()) statusRow('HIDDEN', (me.radarUntil - now) / (RADAR_TIME * 1000), '#7a8ad8', Math.ceil((me.radarUntil - now) / 1000) + 'S');
     else if (now < me.radarCdUntil) statusRow('RADAR', 1 - (me.radarCdUntil - now) / (RADAR_COOLDOWN * 1000), '#3a3f5a', Math.ceil((me.radarCdUntil - now) / 1000) + 'S');
     else statusRow('RADAR', 1, '#7a8ad8');
+  }
+
+  if (luckActive()) {
+    const left = me.luckUntil - performance.now(), sec = Math.ceil(left / 1000);
+    statusRow('LUCK', Math.min(1, left / (LUCK_TIME * 1000)), ITEMS.luck_potion.color, Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'));
   }
 
   const immune = immuneLeft();
@@ -3347,13 +4173,14 @@ function drawInventory() {
       ctx.fillStyle = rarityOf(it).bg;
       ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
       drawItemIcon(it, s.x + 2, s.y + 2);
+      if (item.n > 1) drawText(ctx, String(item.n), s.x + s.w, s.y + s.h - 5, 1, '#ffffff', 'right', '#140c1c');
       if (item.marked) drawDeleteMark(s.x, s.y, s.w);
       if (isOver) hovered = item;
     }
   }
   // Equipment column
-  EQUIP_SLOTS.forEach((slot, i) => {
-    const s = equipSlotRect(i);
+  EQUIP_SLOTS.forEach(slot => {
+    const s = equipSlotRect(slot);
     const active = slot === activeHand;
     drawText(ctx, EQUIP_LABELS[slot], s.x + s.w / 2, s.y - 8, 1, active ? '#ffe66d' : '#b9a8e0', 'center');
     ctx.fillStyle = over(s) && equipped[slot] ? '#ffffff' : active ? '#ffe66d' : '#5a4a7a';
@@ -3591,6 +4418,90 @@ function drawFrost() {
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 }
 
+// Volcanic area: falling fire and a warm glow while the player is in it, fading like the snow.
+const fireRain = [];
+let lavaAmt = 0;
+const inVolcano = () => state === 'game' && !me.dead && sectionOf(me.y + PLAYER_H) === VOLCANO_SECTION;
+function updateVolcano(dt) {
+  const inside = inVolcano();
+  lavaAmt = inside ? Math.min(1, lavaAmt + dt / SNOW_FADE_IN) : Math.max(0, lavaAmt - dt / SNOW_FADE_OUT);
+  if (lavaAmt === 0) fireRain.length = 0;
+  if (inside && fireRain.length < 90) {
+    const sparse = fireRain.length < 15;
+    for (let n = sparse ? 6 : Math.floor(dt * 22 + Math.random()); n > 0; n--) {
+      fireRain.push({ x: cam.x + Math.random() * (VIEW_W + 120), y: sparse ? cam.y + Math.random() * VIEW_H * 0.8 : cam.y - 10,
+        vx: -25 - Math.random() * 20, vy: 110 + Math.random() * 70, big: Math.random() < 0.3 });
+    }
+  }
+  for (let i = fireRain.length - 1; i >= 0; i--) {
+    const f = fireRain[i];
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+    if (Math.random() < 0.4) particles.push({ x: f.x, y: f.y - 2, vx: (Math.random() - 0.5) * 10, vy: -10, life: 0.25, max: 0.25, color: Math.random() < 0.5 ? '#ff6a1a' : '#ffb040', g: 0 });
+    if (overlaps(f.x, f.y, 1, 1)) {
+      emit(f.x, f.y - 1, 5, Math.random() < 0.5 ? '#ffb040' : '#ff6a1a', 50, 0.35);
+      fireRain.splice(i, 1);
+    } else if (f.y > cam.y + VIEW_H + 10) {
+      fireRain.splice(i, 1);
+    }
+  }
+  // Embers drift up off the magma platforms.
+  if (lavaAmt > 0) {
+    for (const s of magmaPlats) {
+      if (s.x + s.w < cam.x || s.x > cam.x + VIEW_W || s.y < cam.y || s.y > cam.y + VIEW_H) continue;
+      if (Math.random() < dt * s.w / 40) {
+        particles.push({ x: s.x + Math.random() * s.w, y: s.y - 1, vx: (Math.random() - 0.5) * 8, vy: -20 - Math.random() * 20,
+          life: 0.8, max: 0.8, color: Math.random() < 0.6 ? '#ff8a2a' : '#ffe08a', g: 0 });
+      }
+    }
+  }
+}
+
+function drawFireRain(cx, cy) {
+  if (lavaAmt <= 0) return;
+  ctx.globalAlpha = lavaAmt;
+  for (const f of fireRain) {
+    const x = Math.round(f.x - cx), y = Math.round(f.y - cy);
+    const ux = f.vx / f.vy, k = f.big ? 2 : 1;
+    ctx.fillStyle = 'rgba(255, 90, 20, 0.35)';
+    ctx.fillRect(x - 2 * k, y - 2 * k, 5 * k, 5 * k);
+    ctx.fillStyle = '#c8281c';
+    ctx.fillRect(Math.round(x - ux * 8 * k), y - 8 * k, k, 3 * k);
+    ctx.fillStyle = '#ff6a1a';
+    ctx.fillRect(Math.round(x - ux * 4 * k), y - 5 * k, 2 * k, 4 * k);
+    ctx.fillStyle = '#ffb040';
+    ctx.fillRect(x - k, y - k, 3 * k, 3 * k);
+    ctx.fillStyle = '#fff2b0';
+    ctx.fillRect(x, y, k, k);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Magma tops shimmer, and the whole view gets a red-orange heat glow inside the volcano.
+function drawMagmaGlow(cx, cy) {
+  for (const s of magmaPlats) {
+    const sx = s.x - cx, sy = s.y - cy;
+    if (sx + s.w < 0 || sx > VIEW_W || sy < -8 || sy > VIEW_H + 4) continue;
+    for (let x = 0; x < s.w; x += 4) {
+      const a = 0.25 + 0.25 * Math.sin(time * 3 + (s.x + x) * 0.3);
+      ctx.fillStyle = `rgba(255, 224, 138, ${a.toFixed(2)})`;
+      ctx.fillRect(sx + x, sy, Math.min(4, s.w - x), 1);
+      ctx.fillStyle = `rgba(255, 106, 26, ${(a * 0.5).toFixed(2)})`;
+      ctx.fillRect(sx + x, sy - 2, Math.min(4, s.w - x), 2);
+    }
+  }
+}
+function drawHeat() {
+  if (lavaAmt <= 0) return;
+  ctx.fillStyle = `rgba(255, 80, 20, ${(0.12 * lavaAmt).toFixed(3)})`;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  const gr = ctx.createLinearGradient(0, VIEW_H * 0.55, 0, VIEW_H);
+  gr.addColorStop(0, 'rgba(255, 90, 20, 0)');
+  gr.addColorStop(1, `rgba(255, 90, 20, ${(0.22 * lavaAmt).toFixed(3)})`);
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, VIEW_H * 0.55, VIEW_W, VIEW_H * 0.45);
+}
+
 // Draws the part of a world-space image (whose top edge sits at world y = top) that is in view.
 function drawWorldImage(img, top, cx, cy) {
   const sy = Math.max(0, cy - top), ey = Math.min(img.height, cy + VIEW_H - top);
@@ -3697,7 +4608,13 @@ function drawGame() {
   drawWorldImage(levelCanvas, 0, cx, cy);
   if (biomeOpen) drawWorldImage(biomeCanvas, BIOME_TOP, cx, cy);
   drawFrost();
+  drawMagmaGlow(cx, cy);
+  drawHeat();
+  drawBench(cx, cy);
+  drawVault(cx, cy);
+  drawBucketSpot(cx, cy);
   drawChests(cx, cy);
+  drawClovers(cx, cy);
   drawStorms(cx, cy, false);
 
   for (const r of remotes.values()) {
@@ -3712,7 +4629,7 @@ function drawGame() {
   if (!me.dead) {
     const mch = me.charging ? me.chargeT / BOW_CHARGE_TIME : -1;
     const fx = playerFx(me.color, me.flash, immuneLeft() > 0, me.punchT,
-      heldKey(), (equipped.head ? 1 : 0) | (equipped.feet ? 2 : 0), mch);
+      heldKey(), armorList(), mch);
     const inBush = myBush() >= 0;
     if (inBush) ctx.globalAlpha = 0.6;
     drawPlayer(ctx, me.x - cx, me.y - cy, me.color, me.facing, me.anim, time, fx);
@@ -3737,6 +4654,7 @@ function drawGame() {
   drawArrows(cx, cy);
   drawParticles(ctx, cx, cy);
   drawSnow(cx, cy);
+  drawFireRain(cx, cy);
   drawDamageNumbers(cx, cy);
   if (skyFlash > 0) {
     ctx.fillStyle = `rgba(255, 252, 230, ${Math.min(0.6, skyFlash)})`;
@@ -3749,6 +4667,8 @@ function drawGame() {
     drawHud();
     drawPlayerArrows(cx, cy);
     if (inventoryOpen) drawInventory();
+    if (craftOpen) drawCraftPanel();
+    if (storageOpen) drawStoragePanel();
     if (adminOpen) drawAdminPanel();
     drawToast();
   }
@@ -3782,6 +4702,7 @@ function frame(now) {
     updateChests(dt);
     updateParticles(dt);
     updateSnow(dt);
+    updateVolcano(dt);
     updateDamageNumbers(dt);
     updateCamera(dt);
     drawGame();
