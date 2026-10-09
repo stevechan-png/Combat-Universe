@@ -748,6 +748,16 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
       for (const [c, r] of [[11, 5], [10, 6], [12, 6], [11, 7]]) px(c, r, it.color);
       px(11, 6, '#ffffff');
     }
+  } else if (it.kind === 'staff') {
+    for (let r = -3; r <= 9; r++) px(10, r, hilt);
+    const glow = Math.floor(time * 12) % 2;
+    for (const [c, r] of [[9, -5], [10, -5], [11, -5], [10, -6], [9, -4], [10, -4], [11, -4]]) px(c, r, it.color);
+    px(10, -5, glow ? '#fff2b0' : '#ffb040');
+    if (glow) px(10, -7, '#ffb040');
+  } else if (it.flame) {
+    for (let c = 10; c <= 15; c++) px(c, 5, '#5a5a68');
+    for (let r = 6; r <= 8; r++) for (let c = 9; c <= 11; c++) px(c, r, r === 6 ? shade(it.color, 0.3) : it.color);
+    px(16, 5, Math.floor(time * 12) % 2 ? '#ffb040' : '#ff6a1a');
   } else if (it.kind === 'laser') {
     for (let c = 10; c <= 15; c++) px(c, 5, c === 15 ? '#ff3b3b' : it.color);
     for (let c = 10; c <= 13; c++) px(c, 6, shade(it.color, -0.3));
@@ -876,6 +886,12 @@ const LASER_TICK = 0.1;
 const LASER_FUEL = 5;
 const LASER_RANGE = 240;
 const LASER_EMPTY_COOLDOWN = 4;
+// Fire effect: 5 damage every second while it lasts.
+const BURN_DAMAGE = 5;
+const MAGMA_COMBO = 5, MAGMA_BURN_TIME = 6;
+const FIREBALL_BURN_TIME = 5, FIREBALL_BURN_CHANCE = 0.1, FIREBALL_BURN_CHANCE_VOLCANO = 0.5;
+const THORNS_DAMAGE = 10;
+const MAX_FUEL = 10;
 const JET_SPEED = 180;
 // Flight plus the coast after it adds up to the height of three air jumps.
 const JET_TIME = (3 * AIR_JUMP_V * AIR_JUMP_V - JET_SPEED * JET_SPEED) / (2 * GRAVITY) / JET_SPEED;
@@ -930,7 +946,7 @@ const me = {
   dashT: 0, dashDir: 1, dashCd: 0, charging: false, chargeT: 0,
   ammo: SHURIKEN_AMMO, burst: 0, burstT: 0, lastThrow: 0,
   fuel: LASER_FUEL, laserOut: 0, laserTick: 0, beam: null, refueling: false,
-  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, frozenUntil: 0, boosted: false, radarUntil: 0, radarCdUntil: 0, luckUntil: 0, snowFill: 0, bucketFullWarned: false,
+  jetting: false, jetFuel: JET_TIME, jetEmpty: false, stunUntil: 0, frozenUntil: 0, boosted: false, radarUntil: 0, radarCdUntil: 0, luckUntil: 0, burnUntil: 0, burnNext: 0, burnBy: '', combo: { id: '', n: 0 }, snowFill: 0, bucketFullWarned: false,
 };
 const radarActive = () => performance.now() < me.radarUntil;
 const picker = hexToHsv(me.color);
@@ -1071,10 +1087,16 @@ let dragTarget = null;
 const lastInvClick = { item: null, t: 0 };
 
 // Crafting bench
-const CRAFT_PANEL = { x: VIEW_W / 2 - 130, y: 50, w: 260, h: 126 };
-const CRAFT_BTN = { x: CRAFT_PANEL.x + CRAFT_PANEL.w - 66, y: CRAFT_PANEL.y + 62, w: 60, h: 16 };
-const DUMP_BTN = { x: CRAFT_PANEL.x + CRAFT_PANEL.w - 66, y: CRAFT_PANEL.y + 98, w: 60, h: 16 };
-const RECIPES = [{ key: 'luck_potion', needs: [['clover', 5], ['water', 1]] }];
+const CRAFT_PANEL = { x: VIEW_W / 2 - 130, y: 47, w: 260, h: 174 };
+const CRAFT_BTN = { x: CRAFT_PANEL.x + CRAFT_PANEL.w - 66, y: CRAFT_PANEL.y + 86, w: 60, h: 16 };
+const DUMP_BTN = { x: CRAFT_PANEL.x + CRAFT_PANEL.w - 66, y: CRAFT_PANEL.y + 152, w: 60, h: 16 };
+const RECIPES = [
+  { key: 'luck_potion', needs: [['clover', 5], ['water', 1]], desc: () => LUCK_MULT + 'X CHEST LUCK FOR 2 MINUTES' },
+  { key: 'miners_gauntlet', needs: [['ice_gauntlet', 1], ['stone_pickaxe', 2], ['iron_sword', 3]] },
+  { key: 'frozen_pickaxe', needs: [['ice_shard', 3], ['iron_pickaxe', 1]] },
+];
+const craftTabRect = i => ({ x: CRAFT_PANEL.x + 6 + i * 24, y: CRAFT_PANEL.y + 18, w: 20, h: 20 });
+let craftSel = 0;
 let craftOpen = false;
 const nearBench = () => !me.dead
   && me.x + PLAYER_W > BENCH.x - 14 && me.x < BENCH.x + BENCH.w + 14
@@ -1244,7 +1266,8 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
   if (craftOpen && over(CRAFT_PANEL)) {
-    if (e.button === 0 && over(CRAFT_BTN)) craftItem(RECIPES[0]);
+    if (e.button === 0 && over(CRAFT_BTN)) craftItem(RECIPES[craftSel]);
+    RECIPES.forEach((r, i) => { if (e.button === 0 && over(craftTabRect(i))) craftSel = i; });
     if (e.button === 0 && over(DUMP_BTN)) dumpWater();
     return;
   }
@@ -1570,7 +1593,8 @@ const ROOM_ID = 'main-lobby';
 const remotes = new Map();
 let netStatus = 'OFFLINE';
 let room = null;
-let sendState = null, sendHit = null, sendDamage = null;
+let sendState = null, sendHit = null, sendDamage = null, sendThorns = null;
+const lastHitSent = new Map();
 let sendChests = null, sendChestHit = null, sendChestBreak = null, sendArrow = null, sendStorm = null, sendBiome = null, sendAdmin = null;
 let myPeerId = 'local';
 
@@ -1584,7 +1608,7 @@ function packState() {
     w: heldKey(), ar: armorList(),
     ch: me.charging ? Math.round(Math.min(1, me.chargeT / BOW_CHARGE_TIME) * 10) : -1,
     rb: radarActive() ? 1 : 0, jt: me.jetting ? 1 : 0, bu: myBush(),
-    pw: powerKey(), fr: performance.now() < me.frozenUntil ? 1 : 0,
+    pw: powerKey(), fr: performance.now() < me.frozenUntil ? 1 : 0, bn: burning() ? 1 : 0,
     lz: me.beam ? [Math.round(me.beam.x2), Math.round(me.beam.y2)] : 0,
   };
 }
@@ -1624,6 +1648,7 @@ function onRemote(id, d) {
   r.jt = !!d.jt;
   r.pw = typeof d.pw === 'string' && ITEMS[d.pw] ? d.pw : '';
   r.fr = !!d.fr;
+  r.bn = !!d.bn;
   r.bu = Number.isInteger(d.bu) && d.bu >= 0 && d.bu < bushes.length ? d.bu : -1;
   r.lz = Array.isArray(d.lz) && Number.isFinite(d.lz[0]) && Number.isFinite(d.lz[1]) ? [d.lz[0], d.lz[1]] : null;
   r.tx = d.x; r.ty = d.y;
@@ -1644,15 +1669,15 @@ function validateHit(d, ax, ay, tx, ty, slackX, forChest) {
   if (!it) return null;
   const damage = itemDamage(it, d, forChest);
   // max hits per window (ms); generous enough for network bunching.
-  if (it.kind === 'bow' || it.kind === 'shuriken') {
+  if (it.kind === 'bow' || it.kind === 'shuriken' || it.kind === 'staff') {
     if (Math.hypot(ax - tx, ay - ty) > (it.speed || ARROW_SPEED) * ARROW_LIFE + 80) return null;
-    return it.kind === 'bow'
-      ? { damage, item: it, max: 1, window: it.cooldown * 700, key: 'bow' }
-      : { damage, item: it, max: SHURIKEN_BURST_COUNT, window: SHURIKEN_RELOAD * 900, key: 'shuriken' };
+    return it.kind === 'shuriken'
+      ? { damage, item: it, max: SHURIKEN_BURST_COUNT, window: SHURIKEN_RELOAD * 900, key: 'shuriken' }
+      : { damage, item: it, max: 1, window: it.cooldown * 700, key: it.kind };
   }
   if (it.kind === 'laser') {
     if (Math.hypot(ax - tx, ay - ty) > LASER_RANGE + 60) return null;
-    return { damage, item: it, max: Math.round(1 / LASER_TICK) + 1, window: 1000, key: 'laser' };
+    return { damage, item: it, max: Math.round(1 / (it.tick || LASER_TICK)) + 1, window: 1000, key: 'laser' };
   }
   if (Math.abs(ax - tx) > it.range + slackX || Math.abs(ay - ty) > 32) return null;
   return { damage, item: it, max: 1, window: (it.cooldown || PUNCH_COOLDOWN) * 700, key: it.cooldown ? 'melee_' + d.w : 'melee' };
@@ -1676,6 +1701,18 @@ function onHit(id, d) {
 
   const inSnow = sectionOf(r.ty + PLAYER_H) === SNOW_SECTION;
   const damage = d.fz && remoteBoosted(r) ? Math.round(hit.damage * FREEZE_DAMAGE_MULT) : hit.damage;
+  if (Math.random() < thornsChance() && sendThorns) {
+    try { sendThorns(id); } catch (e) { /* peer gone */ }
+    emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 10, '#ff6a1a', 70, 0.35);
+  }
+  if (takeDamage(damage, r.n)) return;
+  if (hit.item.freeze && Math.random() < (inSnow ? FROZEN_CHANCE_SNOW : FROZEN_CHANCE)) freezeMe();
+  if (hit.item.burn && d.burn) setOnFire(MAGMA_BURN_TIME, r.n);
+  if (hit.item.kind === 'staff' && Math.random() < (inVolcano() ? FIREBALL_BURN_CHANCE_VOLCANO : FIREBALL_BURN_CHANCE)) setOnFire(FIREBALL_BURN_TIME, r.n);
+}
+
+// Returns true if the hit killed us.
+function takeDamage(damage, killer) {
   me.hp = Math.max(0, me.hp - damage);
   me.flash = HURT_FLASH;
   addDamageNumber(me.x, me.y, damage);
@@ -1683,10 +1720,50 @@ function onHit(id, d) {
     try { sendDamage({ a: damage, hp: me.hp }); } catch (e) { /* ignore */ }
   }
   if (me.hp <= 0) {
-    die(r.n);
-    return;
+    die(killer);
+    return true;
   }
-  if (hit.item.freeze && Math.random() < (inSnow ? FROZEN_CHANCE_SNOW : FROZEN_CHANCE)) freezeMe();
+  return false;
+}
+
+// Magma armor: each piece rolls on its own; any success reflects one hit.
+const thornsChance = () => 1 - armorList().reduce((p, k) => p * (1 - ((k && ITEMS[k].thorns) || 0)), 1);
+
+// The victim of a thorns proc asks us to take the damage; only honour it from
+// someone we actually hit a moment ago.
+function onThorns(id) {
+  if (state !== 'game' || me.dead) return;
+  const r = remotes.get(id);
+  if (!r || r.dead || !(performance.now() - (lastHitSent.get(id) || -1e9) < 2000)) return;
+  lastHitSent.delete(id);
+  emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 10, '#ff6a1a', 70, 0.35);
+  takeDamage(THORNS_DAMAGE, r.n);
+}
+
+const burning = () => performance.now() < me.burnUntil;
+function setOnFire(seconds, by) {
+  const now = performance.now();
+  if (!burning()) {
+    me.burnNext = now + 1000;
+    showToast('YOU ARE ON FIRE!', '#ff8a2a');
+  }
+  me.burnUntil = Math.max(me.burnUntil, now + seconds * 1000);
+  me.burnBy = by || '';
+  broadcastState();
+}
+
+// Runs on the background timer so burning keeps ticking in hidden tabs.
+function tickBurn() {
+  if (state !== 'game' || me.dead || !me.burnUntil) return;
+  const now = performance.now();
+  while (me.burnNext <= now && me.burnNext <= me.burnUntil + 1) {
+    me.burnNext += 1000;
+    if (takeDamage(BURN_DAMAGE, me.burnBy)) return;
+  }
+  if (now > me.burnUntil) {
+    me.burnUntil = 0;
+    broadcastState();
+  }
 }
 
 function freezeMe() {
@@ -1745,7 +1822,13 @@ async function startNet() {
     sendArrow = d => arrowAction.send(d);
     arrowAction.onMessage = (d, ctx) => onRemoteArrow(ctx.peerId, d);
     sendState = d => stateAction.send(d);
-    sendHit = (d, target) => hitAction.send(d, { target });
+    sendHit = (d, target) => {
+      lastHitSent.set(target, performance.now());
+      return hitAction.send(d, { target });
+    };
+    const thornsAction = room.makeAction('thorns');
+    sendThorns = target => thornsAction.send({ a: THORNS_DAMAGE }, { target });
+    thornsAction.onMessage = (d, ctx) => onThorns(ctx.peerId);
     sendDamage = d => damageAction.send(d);
     sendChests = d => chestsAction.send(d);
     sendChestHit = (d, target) => chestHitAction.send(d, { target });
@@ -1787,6 +1870,7 @@ function tickRegen() {
 
 setInterval(() => {
   tickRegen();
+  tickBurn();
   tickChests();
   tickStorms();
   tickTracker();
@@ -1839,16 +1923,25 @@ function doMelee() {
   me.punchCount++;
   const reach = PLAYER_W / 2 + it.range;
   const hx = me.facing > 0 ? me.x + PLAYER_W / 2 : me.x + PLAYER_W / 2 - reach;
-  for (const [id, r] of remotes) {
-    if (r.dead || it.damage <= 0) continue;
-    if (rectsOverlap(hx, me.y, reach, PLAYER_H, r.x, r.y, PLAYER_W, PLAYER_H) && sendHit) {
-      try { sendHit(msg, id); } catch (e) { /* peer gone */ }
+  const targets = [...remotes].filter(([, r]) => !r.dead && it.damage > 0 && rectsOverlap(hx, me.y, reach, PLAYER_H, r.x, r.y, PLAYER_W, PLAYER_H));
+  // Magma blades: the 5th hit in a row on the same player (no misses) sets them on fire.
+  if (it.burn) {
+    const main = targets.length ? targets[0][0] : '';
+    me.combo = main && me.combo.id === main ? { id: main, n: me.combo.n + 1 } : { id: main, n: main ? 1 : 0 };
+    if (me.combo.n >= MAGMA_COMBO) {
+      msg.burn = 1;
+      me.combo.n = 0;
     }
+  }
+  for (const [id] of targets) {
+    if (!sendHit) break;
+    try { sendHit(msg, id); } catch (e) { /* peer gone */ }
   }
   for (const c of [...chests]) {
     if (rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, chestW(c), chestH(c))) hitChest(c, msg);
   }
   hitClovers(hx, me.y, reach, msg);
+  if (shardHitsBox(hx, me.y, reach, PLAYER_H)) hitShard(msg);
   broadcastState();
 }
 
@@ -1873,7 +1966,7 @@ function aimDir(aimAtMouse) {
 function fireArrow(charged, aimAtMouse) {
   const it = heldItem();
   const { sx, sy, dx, dy } = aimDir(aimAtMouse);
-  if (it.kind === 'bow') me.punchCd = it.cooldown;
+  if (it.kind === 'bow' || it.kind === 'staff') me.punchCd = it.cooldown;
   me.punchT = PUNCH_TIME;
   me.punchCount++;
   const speed = it.speed || ARROW_SPEED;
@@ -1911,7 +2004,7 @@ function updateArrows(dt) {
       a.x += a.vx * dt / steps;
       a.y += a.vy * dt / steps;
       if (a.x < 0 || a.x > WORLD_W || a.y < worldTop() - 20 || a.y > WORLD_H || overlaps(a.x, a.y, 1, 1)) {
-        emit(a.x, a.y, 4, '#c8b89a', 30, 0.25);
+        if (ITEMS[a.w].kind !== 'staff') emit(a.x, a.y, 4, '#c8b89a', 30, 0.25);
         gone = true;
         break;
       }
@@ -1931,14 +2024,49 @@ function updateArrows(dt) {
           gone = true;
         }
       }
+      if (!gone && shardHitsBox(a.x, a.y, 1, 1)) {
+        if (a.mine) hitShard({ w: a.w, ch: a.ch, ar: 1 });
+        gone = true;
+      }
     }
-    if (gone) arrows.splice(i, 1);
-    else if (a.ch && Math.random() < 0.5) emit(a.x, a.y, 1, '#ffd84a', 10, 0.2);
+    if (gone) {
+      if (ITEMS[a.w].kind === 'staff') emit(a.x, a.y, 10, Math.random() < 0.5 ? '#ffb040' : '#ff6a1a', 60, 0.4);
+      arrows.splice(i, 1);
+    } else if (ITEMS[a.w].kind === 'staff') {
+      particles.push({ x: a.x, y: a.y, vx: (Math.random() - 0.5) * 12, vy: -12, life: 0.3, max: 0.3, color: Math.random() < 0.5 ? '#ff6a1a' : '#ffb040', g: 0 });
+    } else if (a.ch && Math.random() < 0.5) emit(a.x, a.y, 1, '#ffd84a', 10, 0.2);
   }
+}
+
+const FLAME_COLORS = ['#ff6a1a', '#ffb040', '#ffe08a', '#c8281c'];
+function burnFx(x, y) {
+  for (let n = Math.random() < 0.5 ? 2 : 1; n > 0; n--) {
+    particles.push({ x: x + Math.random() * PLAYER_W, y: y + PLAYER_H - Math.random() * PLAYER_H, vx: (Math.random() - 0.5) * 8, vy: -25 - Math.random() * 15,
+      life: 0.4, max: 0.4, color: FLAME_COLORS[Math.floor(Math.random() * FLAME_COLORS.length)], g: 0 });
+  }
+}
+
+// Fireballs reuse the look of the volcano's falling fire, pointed along their path.
+function drawFireball(x, y, vx, vy, k) {
+  const sp = Math.hypot(vx, vy) || 1, ux = vx / sp, uy = vy / sp;
+  ctx.fillStyle = 'rgba(255, 90, 20, 0.35)';
+  ctx.fillRect(x - 2 * k, y - 2 * k, 5 * k, 5 * k);
+  ctx.fillStyle = '#c8281c';
+  ctx.fillRect(Math.round(x - ux * 8 * k), Math.round(y - uy * 8 * k), 2 * k, 2 * k);
+  ctx.fillStyle = '#ff6a1a';
+  ctx.fillRect(Math.round(x - ux * 4 * k) - k, Math.round(y - uy * 4 * k) - k, 3 * k, 3 * k);
+  ctx.fillStyle = '#ffb040';
+  ctx.fillRect(x - k, y - k, 3 * k, 3 * k);
+  ctx.fillStyle = '#fff2b0';
+  ctx.fillRect(x, y, k, k);
 }
 
 function drawArrows(cx, cy) {
   for (const a of arrows) {
+    if (ITEMS[a.w].kind === 'staff') {
+      drawFireball(Math.round(a.x - cx), Math.round(a.y - cy), a.vx, a.vy, 1);
+      continue;
+    }
     if (ITEMS[a.w].kind === 'shuriken') {
       const x = Math.round(a.x - cx), y = Math.round(a.y - cy);
       const diag = Math.floor(time * 20) % 2;
@@ -2030,8 +2158,13 @@ function castBeam(sx, sy, dx, dy) {
   return { x2: x, y2: y };
 }
 
+// The flamethrower is a laser with its own fuel tank, refuel speed and damage tick.
+const fuelMax = it => it.fuel || LASER_FUEL;
+
 function updateLaser(dt) {
-  const holding = heldItem().kind === 'laser';
+  const it = heldItem();
+  const holding = it.kind === 'laser';
+  if (holding) me.fuel = Math.min(me.fuel, fuelMax(it));
   const firing = holding && !inventoryOpen && !pickerOpen && me.laserOut <= 0 && me.fuel > 0 &&
     (mouseLeftHeld || held(PUNCH_KEYS));
   if (me.laserOut > 0) {
@@ -2040,7 +2173,7 @@ function updateLaser(dt) {
   }
   if (!firing) {
     if (me.beam) { me.beam = null; broadcastState(); }
-    if (holding && me.refueling && me.laserOut <= 0) me.fuel = Math.min(LASER_FUEL, me.fuel + dt);
+    if (holding && me.refueling && me.laserOut <= 0) me.fuel = Math.min(fuelMax(it), me.fuel + dt * (it.refuel || 1));
     return;
   }
   const { sx, sy, dx, dy } = aimDir(mouseLeftHeld);
@@ -2049,14 +2182,14 @@ function updateLaser(dt) {
   me.fuel = Math.max(0, me.fuel - dt);
   me.laserTick -= dt;
   if (me.laserTick <= 0) {
-    me.laserTick += LASER_TICK;
+    me.laserTick += it.tick || LASER_TICK;
     const msg = attackMsg();
     if (hit.peer && sendHit) {
       try { sendHit(msg, hit.peer); } catch (e) { /* peer gone */ }
     } else if (hit.chest) {
       hitChest(hit.chest, msg);
     }
-    if (Math.random() < 0.8) emit(hit.x2, hit.y2, 2, '#ff6a6a', 40, 0.2);
+    if (Math.random() < 0.8) emit(hit.x2, hit.y2, it.flame ? 4 : 2, it.flame ? '#ffb040' : '#ff6a6a', 40, 0.2);
   }
   if (me.fuel <= 0) {
     me.laserOut = LASER_EMPTY_COOLDOWN;
@@ -2065,9 +2198,20 @@ function updateLaser(dt) {
   }
 }
 
-function drawBeam(x1, y1, x2, y2, cx, cy) {
+function drawBeam(x1, y1, x2, y2, cx, cy, flame) {
   const len = Math.hypot(x2 - x1, y2 - y1);
   const ux = (x2 - x1) / (len || 1), uy = (y2 - y1) / (len || 1);
+  if (flame) {
+    // A stream of fire that widens and flickers toward the end.
+    for (let d = 0; d <= len; d += 2) {
+      const spread = 1 + Math.floor(d / 40);
+      const x = Math.round(x1 + ux * d - cx + (Math.random() - 0.5) * spread), y = Math.round(y1 + uy * d - cy + (Math.random() - 0.5) * spread);
+      const r = Math.random();
+      ctx.fillStyle = r < 0.2 ? '#fff2b0' : r < 0.55 ? '#ffb040' : r < 0.85 ? '#ff6a1a' : '#c8281c';
+      ctx.fillRect(x - Math.floor(spread / 2), y - Math.floor(spread / 2), spread + 1, spread + 1);
+    }
+    return;
+  }
   const wobble = Math.floor(time * 30) % 2;
   for (let d = 0; d <= len; d++) {
     const x = Math.round(x1 + ux * d - cx), y = Math.round(y1 + uy * d - cy);
@@ -2139,6 +2283,14 @@ const ITEMS = {
   ice_gauntlet: { name: 'ICE GAUNTLET', kind: 'melee', style: 'gauntlet', damage: 8, range: PUNCH_RANGE, cooldown: 0.15, color: '#b4ecfa', rarity: 'legendary' },
   diamond_katana: { name: 'DIAMOND KATANA', kind: 'melee', style: 'katana', damage: 16, range: KATANA_RANGE, color: '#6ae8f0', rarity: 'legendary' },
   heavy_hammer: { name: 'HEAVY HAMMER', kind: 'melee', style: 'hammer', damage: 40, range: KATANA_RANGE, cooldown: 5, color: '#8a8a98', rarity: 'mythic' },
+  miners_gauntlet: { name: 'MINERS GAUNTLET', kind: 'melee', style: 'gauntlet', damage: 10, range: PUNCH_RANGE, cooldown: 0.1, mineAll: true, color: '#d8a24a', rarity: 'legendary' },
+  iron_pickaxe: { name: 'IRON PICKAXE', kind: 'melee', style: 'pickaxe', damage: 0, chestDamage: 33, range: SWORD_RANGE, color: '#dfe4ee', rarity: 'epic' },
+  frozen_pickaxe: { name: 'FROZEN PICKAXE', kind: 'melee', style: 'pickaxe', damage: 0, chestDamage: 50, range: SWORD_RANGE, color: '#9ad0ff', rarity: 'mythic' },
+  magma_sword: { name: 'MAGMA SWORD', kind: 'melee', style: 'sword', damage: 18, range: SWORD_RANGE, burn: true, color: '#ff6a1a', rarity: 'epic' },
+  magma_katana: { name: 'MAGMA KATANA', kind: 'melee', style: 'katana', damage: 18, range: KATANA_RANGE, burn: true, color: '#ff6a1a', rarity: 'legendary' },
+  fireball_staff: { name: 'FIREBALL STAFF', kind: 'staff', icon: 'staff', damage: 25, cooldown: 0.8, speed: 260, color: '#ff6a1a', rarity: 'legendary' },
+  flamethrower: { name: 'FLAMETHROWER', kind: 'laser', icon: 'flamethrower', flame: true, damage: 5, tick: 1 / 9, fuel: MAX_FUEL, refuel: 2, silverOk: true, color: '#c8481c', rarity: 'mythic' },
+  magma_gauntlet: { name: 'MAGMA GAUNTLET', kind: 'melee', style: 'gauntlet', damage: 14, range: PUNCH_RANGE, cooldown: 0.1, color: '#ff5a1a', rarity: 'mythic' },
   leather_chestplate: { name: 'LEATHER CHESTPLATE', kind: 'chestplate', hp: 10, color: '#9a6232', rarity: 'common' },
   leather_leggings: { name: 'LEATHER LEGGINGS', kind: 'leggings', hp: 10, color: '#8a5428', rarity: 'common' },
   speed_boots: { name: 'SPEED BOOTS', kind: 'boots', hp: 0, speed: 1.25, color: '#4ae8d0', rarity: 'rare' },
@@ -2151,7 +2303,13 @@ const ITEMS = {
   diamond_chestplate: { name: 'DIAMOND CHESTPLATE', kind: 'chestplate', hp: 24, color: '#6ae8f0', rarity: 'legendary' },
   diamond_leggings: { name: 'DIAMOND LEGGINGS', kind: 'leggings', hp: 23, color: '#4ad4e0', rarity: 'epic' },
   diamond_boots: { name: 'DIAMOND BOOTS', kind: 'boots', hp: 18, color: '#4ad4e0', rarity: 'epic' },
+  // thorns: chance that a hit on the wearer deals THORNS_DAMAGE back to the attacker.
+  magma_helmet: { name: 'MAGMA HELMET', kind: 'helmet', hp: 20, thorns: 0.05, color: '#d8481c', rarity: 'epic' },
+  magma_boots: { name: 'MAGMA BOOTS', kind: 'boots', hp: 20, thorns: 0.05, color: '#c8381c', rarity: 'legendary' },
+  magma_leggings: { name: 'MAGMA LEGGINGS', kind: 'leggings', hp: 20, thorns: 0.05, color: '#c8381c', rarity: 'legendary' },
+  magma_chestplate: { name: 'MAGMA CHESTPLATE', kind: 'chestplate', hp: 30, thorns: 0.1, color: '#d8481c', rarity: 'legendary' },
   clover: { name: 'CLOVER', kind: 'material', icon: 'clover', stack: 10, color: '#3a9a34', rarity: 'uncommon', desc: 'CRAFTING MATERIAL / STACKS TO 10' },
+  ice_shard: { name: 'ICE SHARD', kind: 'material', icon: 'shard', stack: 10, color: '#9ad8f4', rarity: 'legendary', desc: 'CRAFTING MATERIAL / STACKS TO 10' },
   water: { name: 'WATER', kind: 'material', icon: 'water', stack: 10, color: '#4aa8ff', rarity: 'uncommon', desc: 'CRAFTING MATERIAL / STACKS TO 10' },
   bucket: { name: 'BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#2a2a36', rarity: 'common', autoHold: true, desc: 'MAYBE YOU CAN FILL IT WITH SOMETHING' },
   snow_bucket: { name: 'SNOW BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#f4f8ff', rarity: 'common', desc: 'MAYBE SOMETHING CAN MELT IT' },
@@ -2173,6 +2331,10 @@ const DROP_TABLES = {
   armor: {
     leather_leggings: 2, leather_chestplate: 4, speed_boots: 7, iron_helmet: 10, iron_boots: 10, iron_leggings: 15, iron_chestplate: 15,
     heavy_chestplate: 20, diamond_helmet: 25, diamond_boots: 25, diamond_leggings: 28, diamond_chestplate: 29,
+  },
+  magma: {
+    heavy_chestplate: 2, diamond_sword: 4, laser_gun: 6, magma_helmet: 8, iron_pickaxe: 10, magma_sword: 15, magma_boots: 18,
+    magma_leggings: 22, fireball_staff: 25, magma_chestplate: 28, magma_katana: 30, flamethrower: 40, magma_gauntlet: 50,
   },
 };
 // Ice chests borrow the stone table until they get their own.
@@ -2200,7 +2362,7 @@ function rollChestItem(kind = 'wood', luck = 1) {
 
 const equipped = { hand: null, hand2: null, head: null, chest: null, legs: null, feet: null, power: null };
 let activeHand = 'hand';
-const HAND_KINDS = ['melee', 'bow', 'shuriken', 'laser'];
+const HAND_KINDS = ['melee', 'bow', 'shuriken', 'laser', 'staff'];
 // Materials can be held in a weapon slot, but attack like a bare fist.
 const slotFor = it => (HAND_KINDS.includes(it.kind) || it.kind === 'material' ? 'hand' : ARMOR_KINDS[it.kind] || (it.kind === 'power' ? 'power' : null));
 const armorKey = slot => (equipped[slot] ? equipped[slot].key : '');
@@ -2412,8 +2574,9 @@ const ADMIN_EVENTS = [
   { id: 'break', label: 'BREAK ALL CHESTS' },
   { id: 'thunder', label: 'SUMMON THUNDER X1' },
   { id: 'tracker', label: 'THUNDER TRACKER' },
+  { id: 'shard', label: 'SPAWN ICE SHARD' },
 ];
-const eventBtnRect = i => ({ x: ADMIN_PANEL.x + 20, y: ADMIN_PANEL.y + 40 + i * 26, w: ADMIN_PANEL.w - 40, h: 22 });
+const eventBtnRect = i => ({ x: ADMIN_PANEL.x + 20, y: ADMIN_PANEL.y + 38 + i * 22, w: ADMIN_PANEL.w - 40, h: 19 });
 const TRACKER_DOUBLE_CLICK = 400;
 let adminIceCount = 0;
 let trackerRepeat = false, trackerNext = 0, lastTrackerClick = 0;
@@ -2614,6 +2777,17 @@ function adminEvent(id) {
       thunderTracker();
     }
     lastTrackerClick = now;
+  } else if (id === 'shard') {
+    const feet = me.y + PLAYER_H;
+    const s = solids.find(o => Math.abs(o.y - feet) <= 1 && me.x + PLAYER_W > o.x && me.x < o.x + o.w);
+    if (!s) {
+      showToast('STAND ON A PLATFORM FIRST', '#b4ecfa');
+      return;
+    }
+    const want = me.facing > 0 ? me.x + PLAYER_W + 4 : me.x - SHARD_W - 4;
+    const x = Math.round(Math.max(s.x, Math.min(s.x + s.w - SHARD_W, want)));
+    adminToHost({ shard: [x, s.y - SHARD_H] });
+    showToast('ICE SHARD SPAWNED', ITEMS.ice_shard.color);
   }
 }
 
@@ -2681,6 +2855,14 @@ function onAdminMsg(id, d) {
 function hostAdmin(by, d) {
   if (d.breakAll) breakAllChests(by);
   if (d.ice) spawnIceChests(Math.max(1, Math.min(30, d.ice | 0)));
+  if (Array.isArray(d.shard) && d.shard.every(Number.isFinite)) spawnShardAt(d.shard[0], d.shard[1]);
+}
+
+// Admin shards can go anywhere and replace the current one.
+function spawnShardAt(x, y) {
+  if (x < 0 || x > WORLD_W - SHARD_W || y < worldTop() || y > WORLD_H) return;
+  shard = { id: Math.random().toString(36).slice(2, 10), x: Math.round(x), y: Math.round(y), hp: SHARD_HP, flash: 0, last: performance.now() };
+  broadcastChests();
 }
 
 function breakAllChests(by) {
@@ -2699,7 +2881,7 @@ function spawnIceChests(n) {
   for (let i = 0; i < n; i++) {
     const spot = randomChestSpot(SNOW_SECTION, CHEST_KINDS.ice.w, CHEST_KINDS.ice.h);
     if (!spot) break;
-    chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'ice', hp: CHEST_KINDS.ice.hp, flash: 0 });
+    chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'ice', hp: CHEST_KINDS.ice.hp, flash: 0, born: performance.now() });
     made++;
   }
   if (made) {
@@ -2734,17 +2916,19 @@ const SILVER_PAL = { o: '#1a1c28', h: '#f4f7fc', w: '#c2c8d4', d: '#868ea0', m: 
 const STONE_PAL = { o: '#1e1e26', h: '#b4b4be', w: '#8a8a96', d: '#5c5c68', m: '#f2c14e', y: '#fff3a0' };
 const ARMOR_PAL = { o: '#1c0e12', h: '#c25a5e', w: '#8e2e34', d: '#5e1a20', m: '#c8ccd6', y: '#f2f4f8' };
 const ICE_PAL = { o: '#1a4a6a', h: '#f4ffff', w: '#b4ecfa', d: '#78c4e2', m: '#e2fbff', y: '#4ae8f0' };
+const MAGMA_PAL = { o: '#1a0a06', h: '#ff9a3d', w: '#c8381c', d: '#5a1a10', m: '#2a1a16', y: '#ffe08a' };
 // Silver chests are tougher, and only hits stronger than a stone sword can damage them.
 const SILVER_CHEST_HP = 100;
 const SILVER_MIN_DAMAGE = ITEMS.stone_sword.damage + 1;
 // minDamage: hits below it do nothing (silverOk items skip the silver check).
-// needsItem: only that exact item can damage the chest.
+// needsItem / needsItems: only those exact items can damage the chest.
 const CHEST_KINDS = {
   wood: { hp: CHEST_HP, pal: CHEST_PAL, fx: ['#a8672f', '#f2c14e'] },
   silver: { hp: SILVER_CHEST_HP, pal: SILVER_PAL, fx: ['#c2c8d4', '#4ae8f0'], minDamage: SILVER_MIN_DAMAGE, silverOk: true },
   stone: { hp: 300, pal: STONE_PAL, fx: ['#8a8a96', '#f2c14e'], minDamage: 21 },
   ice: { hp: 1000, pal: ICE_PAL, fx: ['#d8f6ff', '#4ae8f0'], needsItem: 'frozen_pickaxe', w: 20, h: 16 },
   armor: { hp: 100, pal: ARMOR_PAL, fx: ['#7a2a30', '#c8ccd6'], minDamage: 9 },
+  magma: { hp: 350, pal: MAGMA_PAL, fx: ['#ff6a1a', '#ffe08a'], minDamage: 30 },
 };
 // The Armorer's Chest keeps one or two in every biome; the number is rerolled each time one breaks.
 const ARMOR_BIOMES = [[0, 1], [2], [3], [4], [BIOME_SECTION, BIOME_SECTION + 1]];
@@ -2758,10 +2942,11 @@ const CHEST_MIX = [
   { wood: 3, silver: 2 },
   { silver: 5 },
   { stone: 5 },
-  { stone: 5 },
+  { magma: 5 },
 ];
 const ICE_ROLL_INTERVAL = 60;
 const ICE_CHANCE = 0.2;
+const ICE_CHEST_LIFE = 300;
 const chestKind = c => (isChestKind(c.k) ? c.k : sectionOf(c.y + CHEST_H) >= 2 ? 'silver' : 'wood');
 const chestMaxHp = c => CHEST_KINDS[chestKind(c)].hp;
 const chestW = c => CHEST_KINDS[chestKind(c)].w || CHEST_W;
@@ -2769,7 +2954,9 @@ const chestH = c => CHEST_KINDS[chestKind(c)].h || CHEST_H;
 const hitDamage = msg => itemDamage(attackItem(msg && msg.w) || FIST_ITEM, msg, true);
 function canHurtChest(kind, msg) {
   const rule = CHEST_KINDS[kind];
+  if (msg && ITEMS[msg.w] && ITEMS[msg.w].mineAll) return true;
   if (rule.needsItem) return !!msg && msg.w === rule.needsItem;
+  if (rule.needsItems) return !!msg && rule.needsItems.includes(msg.w);
   if (!rule.minDamage) return true;
   const it = attackItem(msg && msg.w) || FIST_ITEM;
   return (rule.silverOk && !!it.silverOk) || itemDamage(it, msg, true) >= rule.minDamage;
@@ -2833,6 +3020,7 @@ function randomChestSpot(section, w = CHEST_W, h = CHEST_H) {
     if (overlaps(x, y, w, h)) continue;
     if (reservedSpot(x, y, w, h)) continue;
     if (chests.some(c => Math.abs(c.x - x) < 30 && Math.abs(c.y - y) < 20)) continue;
+    if (shard && Math.abs(shard.x - x) < 30 && Math.abs(shard.y - y) < 20) continue;
     return { x, y };
   }
   return null;
@@ -2844,16 +3032,17 @@ function broadcastChests() {
   if (!sendChests) return;
   try {
     sendChests({
-      l: chests.map(c => [c.id, c.x, c.y, c.hp, c.k]),
+      l: chests.map(c => (c.born ? [c.id, c.x, c.y, c.hp, c.k, Math.round(performance.now() - c.born)] : [c.id, c.x, c.y, c.hp, c.k])),
       b: biomeOpen ? Math.max(1, Math.round(biomeCloseAt - performance.now())) : 0,
       cv: clovers.map(c => [c.id, c.x, c.y, c.hp]),
+      is: shard ? [shard.id, shard.x, shard.y, shard.hp, Math.round(performance.now() - shard.last)] : 0,
     });
   } catch (e) { /* ignore */ }
 }
 
 function tickChests() {
   if (state !== 'game' || !isChestHost()) {
-    nextBiomeRoll = nextStormRoll = nextIceRoll = 0;
+    nextBiomeRoll = nextStormRoll = nextIceRoll = nextShardRoll = 0;
     return;
   }
   const now = performance.now();
@@ -2864,6 +3053,9 @@ function tickChests() {
   }
   tickBiomeEvents(now);
   let added = false;
+  const before = chests.length;
+  chests = chests.filter(c => chestKind(c) !== 'ice' || now - (c.born || now) < ICE_CHEST_LIFE * 1000);
+  if (chests.length !== before) added = true;
   if (biomeOpen) {
     for (const k of Object.keys(BIOME_CHEST_MIX)) {
       let have = chests.filter(c => chestSection(c) >= BIOME_SECTION && chestKind(c) === k).length;
@@ -2918,13 +3110,14 @@ function tickChests() {
     if (!chests.some(c => chestKind(c) === 'ice') && Math.random() < ICE_CHANCE) {
       const spot = randomChestSpot(SNOW_SECTION, CHEST_KINDS.ice.w, CHEST_KINDS.ice.h);
       if (spot) {
-        chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'ice', hp: CHEST_KINDS.ice.hp, flash: 0 });
+        chests.push({ id: Math.random().toString(36).slice(2, 10), ...spot, k: 'ice', hp: CHEST_KINDS.ice.hp, flash: 0, born: now });
         added = true;
         announceIceChest();
       }
     }
   }
   if (tickClovers(now)) added = true;
+  if (tickShard(now)) added = true;
   if (added || chestsDirty || now - lastChestBroadcast > 1000) broadcastChests();
 }
 
@@ -3091,6 +3284,8 @@ function onCloverMsg(id, d) {
   if (!d) return;
   if (typeof d.hit === 'string' && isChestHost()) hostHitClover(d.hit, id, d);
   if (typeof d.got === 'string' && id === chestHostId()) gotClover(d);
+  if (typeof d.shard === 'string' && isChestHost()) hostHitShard(d.shard, id, d);
+  if (typeof d.gotShard === 'string' && id === chestHostId()) gotShard(d);
 }
 
 function cloverHitFx(c, amount) {
@@ -3129,6 +3324,121 @@ function drawClovers(cx, cy) {
     ctx.fillRect(x + 2, y + 1, 1, 1);
     ctx.fillStyle = '#24661f';
     ctx.fillRect(x + 2, y + 2, 1, 2);
+  }
+}
+
+// Ice shard: a rare, player-sized crystal in the snow biome, kept by the chest host.
+// Only hits of 30+ damage chip it (never the miners gauntlet), and it vanishes
+// once nobody has hit it for a while. Spawning is silent.
+const SHARD_W = PLAYER_W, SHARD_H = PLAYER_H;
+const SHARD_HP = 600, SHARD_MIN_DAMAGE = 30;
+const SHARD_ROLL_INTERVAL = 60, SHARD_CHANCE = 0.1, SHARD_IDLE_TIME = 180;
+let shard = null;
+let nextShardRoll = 0;
+
+const shardDamage = msg => {
+  const it = attackItem(msg && msg.w);
+  if (!it || it.mineAll) return 0;
+  const dmg = itemDamage(it, msg, true);
+  return dmg >= SHARD_MIN_DAMAGE ? dmg : 0;
+};
+
+function tickShard(now) {
+  let changed = false;
+  if (shard && now - shard.last > SHARD_IDLE_TIME * 1000) {
+    shard = null;
+    changed = true;
+  }
+  if (!nextShardRoll) nextShardRoll = now + SHARD_ROLL_INTERVAL * 1000;
+  if (now >= nextShardRoll) {
+    nextShardRoll = now + SHARD_ROLL_INTERVAL * 1000;
+    if (!shard && Math.random() < SHARD_CHANCE) {
+      const spot = randomChestSpot(SNOW_SECTION, SHARD_W, SHARD_H);
+      if (spot) {
+        shard = { id: Math.random().toString(36).slice(2, 10), ...spot, hp: SHARD_HP, flash: 0, last: now };
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// Any hit (even one too weak to chip it) restarts the shard's idle timer.
+function hostHitShard(id, by, msg) {
+  const s = shard;
+  if (!s || s.id !== id) return;
+  if (by !== myPeerId) {
+    const r = remotes.get(by);
+    const far = msg && msg.ar;
+    if (!r || Math.abs(r.tx + PLAYER_W / 2 - (s.x + SHARD_W / 2)) > (far ? 700 : 50) || Math.abs(r.ty + PLAYER_H - (s.y + SHARD_H)) > (far ? 400 : 30)) return;
+  }
+  s.last = performance.now();
+  const dmg = shardDamage(msg);
+  if (dmg > 0) {
+    s.hp = Math.max(0, s.hp - dmg);
+    shardHitFx(s, dmg);
+  }
+  if (s.hp > 0) {
+    broadcastChests();
+    return;
+  }
+  shard = null;
+  broadcastChests();
+  if (by === myPeerId) gotShard(s);
+  else if (sendClover) try { sendClover({ gotShard: s.id, x: s.x, y: s.y }, by); } catch (e) { /* ignore */ }
+}
+
+function gotShard(s) {
+  if (!canAdd('ice_shard')) {
+    showToast('INVENTORY FULL', '#ff8a8a');
+    return;
+  }
+  addItem('ice_shard');
+  showToast('GOT AN ICE SHARD! (' + itemCount('ice_shard') + ')', ITEMS.ice_shard.color);
+  if (Number.isFinite(s.x) && Number.isFinite(s.y)) emit(s.x + SHARD_W / 2, s.y + SHARD_H / 2, 14, '#d8f6ff', 60, 0.5);
+}
+
+function hitShard(msg) {
+  const s = shard;
+  if (!s) return;
+  if (!shardDamage(msg)) showToast('TOO WEAK TO CRACK THE ICE SHARD', '#b4ecfa');
+  if (isChestHost()) hostHitShard(s.id, myPeerId, msg);
+  else if (sendClover) try { sendClover({ ...msg, shard: s.id }, chestHostId()); } catch (e) { /* ignore */ }
+}
+
+const shardHitsBox = (x, y, w, h) => !!shard && rectsOverlap(x, y, w, h, shard.x, shard.y, SHARD_W, SHARD_H);
+
+function shardHitFx(s, amount) {
+  s.flash = HURT_FLASH;
+  addDamageNumber(s.x, s.y - 4, amount);
+  emit(s.x + SHARD_W / 2, s.y + SHARD_H / 2, 5, '#d8f6ff', 40, 0.3);
+}
+
+const SHARD_ART = [
+  '....oo....', '...ohdo...', '...ohdo...', '..ohwddo..', '..ohwddo..', 'o.ohmwdo..', 'hoohmwdo.o',
+  'hdohmwdoyo', 'hdohmwdoyd', 'odohwwddyd', 'odohwwddod', 'ooohwwddoo', 'oooooooooo',
+];
+function drawShard(cx, cy) {
+  const s = shard;
+  if (!s) return;
+  const x = Math.round(s.x - cx), y = Math.round(s.y - cy);
+  if (x < -20 || x > VIEW_W + 20 || y < -30 || y > VIEW_H + 20) return;
+  const white = s.flash > 0;
+  if (white) s.flash = Math.max(0, s.flash - 1 / 60);
+  for (let r = 0; r < SHARD_H; r++) {
+    for (let c = 0; c < SHARD_W; c++) {
+      const ch = SHARD_ART[r][c];
+      if (ch === '.') continue;
+      ctx.fillStyle = white ? '#ffffff' : ICE_PAL[ch];
+      ctx.fillRect(x + c, y + r, 1, 1);
+    }
+  }
+  if (Math.random() < 0.04) emit(s.x + Math.random() * SHARD_W, s.y + Math.random() * SHARD_H, 1, '#ffffff', 8, 0.4);
+  if (s.hp < SHARD_HP) {
+    ctx.fillStyle = '#140c1c';
+    ctx.fillRect(x - 3, y - 4, SHARD_W + 6, 3);
+    ctx.fillStyle = '#9ad8f4';
+    ctx.fillRect(x - 2, y - 3, Math.max(1, Math.round((SHARD_W + 4) * s.hp / SHARD_HP)), 1);
   }
 }
 
@@ -3257,8 +3567,17 @@ function drawCraftPanel() {
   drawText(ctx, 'CRAFTING BENCH', p.x + 6, p.y + 5, 1, '#ffe66d');
   drawText(ctx, 'E / SHIFT: CLOSE', p.x + p.w - 6, p.y + 5, 1, '#8a8aa0', 'right');
 
-  const r = RECIPES[0], it = ITEMS[r.key];
-  const box = { x: p.x + 6, y: p.y + 18, w: p.w - 12, h: 28 };
+  RECIPES.forEach((rec, i) => {
+    const t = craftTabRect(i), rit = ITEMS[rec.key], sel = i === craftSel;
+    ctx.fillStyle = sel ? '#ffe66d' : over(t) ? '#ffffff' : canCraft(rec) ? '#3a9a3a' : '#3a2f4a';
+    ctx.fillRect(t.x, t.y, t.w, t.h);
+    ctx.fillStyle = rarityOf(rit).bg;
+    ctx.fillRect(t.x + 1, t.y + 1, t.w - 2, t.h - 2);
+    drawItemIcon(rit, t.x + 4, t.y + 4);
+  });
+
+  const r = RECIPES[craftSel], it = ITEMS[r.key];
+  const box = { x: p.x + 6, y: p.y + 42, w: p.w - 12, h: 28 };
   ctx.fillStyle = '#1a1226';
   ctx.fillRect(box.x, box.y, box.w, box.h);
   ctx.fillStyle = rarityOf(it).bg;
@@ -3267,11 +3586,11 @@ function drawCraftPanel() {
   ctx.fillRect(box.x + 5, box.y + 5, 18, 18);
   drawItemIcon(it, box.x + 8, box.y + 8);
   drawText(ctx, it.name, box.x + 30, box.y + 5, 1, rarityOf(it).text);
-  drawText(ctx, LUCK_MULT + 'X CHEST LUCK FOR 2 MINUTES', box.x + 30, box.y + 16, 1, '#c8c8d8');
+  drawText(ctx, r.desc ? r.desc() : itemDescription(it), box.x + 30, box.y + 16, 1, '#c8c8d8');
 
-  drawText(ctx, 'NEEDS', p.x + 6, p.y + 52, 1, '#8a8aa0');
+  drawText(ctx, 'NEEDS', p.x + 6, p.y + 76, 1, '#8a8aa0');
   r.needs.forEach(([key, n], i) => {
-    const ix = p.x + 6 + i * 84, iy = p.y + 62;
+    const ix = p.x + 6, iy = p.y + 86 + i * 18;
     const have = itemCount(key), ok = have >= n;
     const ing = ITEMS[key];
     ctx.fillStyle = ok ? '#3a6a3a' : '#5a2a2a';
@@ -3279,15 +3598,15 @@ function drawCraftPanel() {
     ctx.fillStyle = '#140c1c';
     ctx.fillRect(ix + 1, iy + 1, 14, 14);
     drawItemIcon(ing, ix + 2, iy + 2);
-    drawText(ctx, n + ' ' + ing.name, ix + 20, iy + 1, 1, '#e8e8e8');
-    drawText(ctx, have + '/' + n, ix + 20, iy + 10, 1, ok ? '#6ad46a' : '#ff8a8a');
+    drawText(ctx, n + ' ' + ing.name, ix + 20, iy + 5, 1, '#e8e8e8');
+    drawText(ctx, have + '/' + n, ix + 160, iy + 5, 1, ok ? '#6ad46a' : '#ff8a8a', 'right');
   });
   craftButton(CRAFT_BTN, 'CRAFT', canCraft(r));
 
   ctx.fillStyle = '#3a2f4a';
-  ctx.fillRect(p.x + 6, p.y + 88, p.w - 12, 1);
+  ctx.fillRect(p.x + 6, p.y + 144, p.w - 12, 1);
   const wb = ITEMS.water_bucket, hasWater = itemCount('water_bucket') > 0;
-  const iy = p.y + 98;
+  const iy = p.y + 152;
   ctx.fillStyle = hasWater ? '#3a6a3a' : '#3a3a4a';
   ctx.fillRect(p.x + 6, iy, 16, 16);
   ctx.fillStyle = '#140c1c';
@@ -3319,7 +3638,9 @@ function chestBlockedFx(c, msg) {
   // Point bow users at the charged shot when it would be strong enough.
   const chargeHelps = it.kind === 'bow' && !(msg && msg.ch) && it.charged >= (rule.minDamage || 0);
   if (rule.needsItem) showToast('NEEDS A FROZEN PICKAXE', '#b4ecfa');
+  else if (rule.needsItems) showToast('ONLY A HEAVY HAMMER OR MINERS GAUNTLET CAN BREAK IT', '#ff9a3d');
   else if (chargeHelps) showToast('MAYBE TRY HOLDING RIGHT CLICK');
+  else if (kind === 'magma') showToast('NEED A HIT THAT DOES 30 OR MORE DAMAGE', '#ff9a3d');
   else if (kind === 'stone') showToast('NEED A HIT THAT DOES MORE THAN 20 DAMAGE');
   else if (kind === 'armor') showToast('NEED A HIT THAT DOES 9 OR MORE DAMAGE');
   else showToast('NEED A WEAPON STRONGER THAN A STONE SWORD');
@@ -3373,6 +3694,7 @@ function onChests(id, d) {
     const prev = old.get(e[0]);
     const c = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp: 0, flash: prev ? prev.flash : 0 };
     if (isChestKind(e[4])) c.k = e[4];
+    if (c.k === 'ice') c.born = performance.now() - Math.max(0, Math.min(ICE_CHEST_LIFE * 1000, Number(e[5]) || 0));
     c.hp = Math.max(0, Math.min(chestMaxHp(c), Number(e[3]) || 0));
     if (prev && c.hp < prev.hp) chestHitFx(c, prev.hp - c.hp);
     if (!prev && c.k === 'ice' && chestsKnown) announceIceChest();
@@ -3392,6 +3714,18 @@ function onChests(id, d) {
         }
         return c;
       });
+  }
+  if ('is' in d) {
+    const e = d.is;
+    if (Array.isArray(e) && typeof e[0] === 'string' && Number.isFinite(e[1]) && Number.isFinite(e[2])) {
+      const prev = shard && shard.id === e[0] ? shard : null;
+      const hp = Math.max(1, Math.min(SHARD_HP, Number(e[3]) || SHARD_HP));
+      if (prev && hp < prev.hp) shardHitFx(prev, prev.hp - hp);
+      shard = { id: e[0].slice(0, 12), x: e[1], y: e[2], hp, flash: prev ? prev.flash : 0,
+        last: performance.now() - Math.max(0, Math.min(SHARD_IDLE_TIME * 1000, Number(e[4]) || 0)) };
+    } else {
+      shard = null;
+    }
   }
   const left = Number(d.b) || 0;
   if (left > 0) {
@@ -3594,6 +3928,8 @@ function resetLife() {
   updateMaxHp();
   me.hp = me.maxHp;
   me.frozenUntil = 0;
+  me.burnUntil = me.burnNext = 0;
+  me.combo = { id: '', n: 0 };
   me.dashT = me.dashCd = 0;
   me.charging = false;
   me.jetting = false;
@@ -3602,7 +3938,7 @@ function resetLife() {
   me.stunUntil = 0;
   me.ammo = SHURIKEN_AMMO;
   me.burst = 0;
-  me.fuel = LASER_FUEL;
+  me.fuel = MAX_FUEL;
   me.laserOut = 0;
   me.beam = null;
   dashQueued = 0;
@@ -3631,7 +3967,7 @@ function leaveGame() {
   const leaving = room ? Promise.resolve(room.leave()).catch(() => {}) : Promise.resolve();
   room = null;
   sendState = sendHit = sendDamage = null;
-  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = sendClover = null;
+  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = sendClover = sendThorns = null;
   craftOpen = storageOpen = false;
   state = 'leaving';
   Promise.race([leaving, new Promise(r => setTimeout(r, 800))]).then(() => location.reload());
@@ -3679,6 +4015,8 @@ function updateMe(dt) {
       const kind = heldItem().kind;
       if (kind === 'bow') {
         if (!me.charging) fireArrow(false, me.attackSource === 'mouse');
+      } else if (kind === 'staff') {
+        fireArrow(false, me.attackSource === 'mouse');
       } else if (kind === 'shuriken') {
         shurikenAttack(me.attackSource === 'mouse');
       } else if (kind !== 'laser') {
@@ -3890,6 +4228,18 @@ const ICONS = {
     '....oooo....', '....osso....', '.....oo.....', '....obbo....', '...obbbbo...', '..obhbbbbo..',
     '.obhbbbbbbo.', '.obhbbbbbbo.', '.obbbbbbbbo.', '.obbbbbbbbo.', '..obbbbbbo..', '...oooooo...',
   ],
+  shard: [
+    '.....oo.....', '....ohbo....', '....ohbo....', '...ohsbbo...', '...ohsbbo...', '..ohhsbbbo..',
+    '..ohhsbbbo..', '..ohhbbbbo..', '...ohbbbo...', '...ohbbbo...', '....ohbo....', '.....oo.....',
+  ],
+  staff: [
+    '.......ofo..', '......ofhfo.', '.....ofhhbo.', '.....obhbbo.', '......obbo..', '.....ogoo...',
+    '....ogo.....', '...ogo......', '..ogo.......', '.ogo........', 'ogo.........', 'oo..........',
+  ],
+  flamethrower: [
+    '............', '..oooo......', '.obhhbo.....', '.obbbbooooo.', '.obbbbsssssf', '.obbbbooooof',
+    '.obbbbo..ff.', '..oooogo....', '.....ogo....', '.....ogo....', '.....oo.....', '............',
+  ],
   bucket: [
     '....oooo....', '...o....o...', '..o......o..', 'oooooooooooo', 'ohwwwwwwwwbo', '.ohbbbbbbbo.',
     '.ohbbbbbbbo.', '.ohbbbbbbbo.', '..ohbbbbbo..', '..ohbbbbbo..', '..oooooooo..', '............',
@@ -3913,15 +4263,20 @@ function drawItemIcon(it, x, y) {
   }
 }
 function itemDescription(it) {
-  if (it.chestDamage) return it.chestDamage + ' DMG TO CHESTS ONLY';
+  if (it.chestDamage) return it.chestDamage + ' DMG TO CHESTS ONLY' + (it.cooldown ? ' / ' + it.cooldown + 'S' : '') + (it === ITEMS.frozen_pickaxe ? ' / BREAKS ICE CHESTS' : '');
+  if (it.mineAll) return it.damage + ' DMG / ' + it.cooldown + 'S / MINES EVERY CHEST';
   if (it.kind === 'melee') return it.damage + ' DMG' + (it.freeze ? ' / CAN FREEZE' : it.cooldown ? ' / ' + it.cooldown + 'S COOLDOWN' : '');
   if (it.kind === 'bow') return it.damage + ' DMG / ' + it.charged + ' CHARGED';
   if (it.kind === 'shuriken') return it.damage + ' DMG X5 / RIGHT CLICK: X' + SHURIKEN_BURST_COUNT;
+  if (it.flame) return Math.round(it.damage / it.tick) + ' DMG/S / ' + it.fuel + 'S FUEL / RIGHT CLICK: REFUEL';
   if (it.kind === 'laser') return LASER_DPS + ' DMG/S / RIGHT CLICK: REFUEL';
+  if (it.kind === 'staff') return it.damage + ' DMG FIREBALLS / ' + it.cooldown + 'S / CAN SET ON FIRE';
+  if (it.burn) return it.damage + ' DMG / ' + MAGMA_COMBO + ' HITS IN A ROW: BURN';
   if (ARMOR_KINDS[it.kind]) {
     const parts = [];
     if (it.hp) parts.push('+' + it.hp + ' MAX HP');
     if (it.speed) parts.push(it.speed > 1 ? 'RUN ' + Math.round((it.speed - 1) * 100) + '% FASTER' : it.speed + 'X SPEED');
+    if (it.thorns) parts.push(Math.round(it.thorns * 100) + '% REFLECT ' + THORNS_DAMAGE + ' DMG');
     return parts.join(' / ');
   }
   if (it.kind === 'power') return POWER_HELP[Object.keys(ITEMS).find(k => ITEMS[k] === it)] || '';
@@ -4037,8 +4392,8 @@ function drawHud() {
   };
   if (it.kind === 'laser') {
     const out = me.laserOut > 0;
-    statusRow('FUEL', out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / LASER_FUEL,
-      out ? '#7a3a3a' : me.refueling && me.fuel < LASER_FUEL ? '#ffe66d' : '#ff5a4a',
+    statusRow('FUEL', out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / fuelMax(it),
+      out ? '#7a3a3a' : me.refueling && me.fuel < fuelMax(it) ? '#ffe66d' : '#ff5a4a',
       out ? Math.ceil(me.laserOut) + 'S' : me.fuel.toFixed(1));
   } else if (it.kind === 'shuriken') {
     const reloading = me.ammo === 0 && me.burst === 0;
@@ -4138,6 +4493,13 @@ function drawChests(cx, cy) {
     if (chestKind(c) === 'ice' && Math.floor(time * 3 + c.x) % 4 === 0) {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(sx + 3 + Math.floor((time * 7 + c.x) % (w - 6)), sy + 3, 1, 1);
+    }
+    if (chestKind(c) === 'magma' && !(c.flash > 0)) {
+      // Glowing cracks that pulse, plus the odd ember.
+      const a = 0.55 + 0.45 * Math.sin(time * 4 + c.x);
+      ctx.fillStyle = `rgba(255, 176, 64, ${a.toFixed(2)})`;
+      for (const [px, py] of [[2, 6], [3, 7], [5, 8], [w - 4, 6], [w - 5, 8], [Math.floor(w / 2) + 2, h - 3]]) ctx.fillRect(sx + px, sy + py, 1, 1);
+      if (Math.random() < 0.05) particles.push({ x: c.x + 2 + Math.random() * (w - 4), y: c.y, vx: (Math.random() - 0.5) * 6, vy: -18, life: 0.6, max: 0.6, color: '#ff8a2a', g: 0 });
     }
     if (c.hp < maxHp) {
       ctx.fillStyle = '#140c1c';
@@ -4280,8 +4642,9 @@ function drawAdminPanel() {
       break: chests.length + ' CHESTS',
       thunder: 'YOUR PLATFORM',
       tracker: trackerRepeat ? 'ON: CLICK TO STOP' : 'X2 CLICK: REPEAT',
+      shard: 'YOUR PLATFORM',
     };
-    const colors = { ice: '#4a8ab0', biome: GRASS[BIOME_SECTION].dark, kill: '#8a2a30', break: '#7a5a2a', thunder: '#6a6a3a', tracker: '#5a5a2a' };
+    const colors = { ice: '#4a8ab0', biome: GRASS[BIOME_SECTION].dark, kill: '#8a2a30', break: '#7a5a2a', thunder: '#6a6a3a', tracker: '#5a5a2a', shard: '#3a7a9a' };
     ADMIN_EVENTS.forEach((ev, i) => {
       const r = eventBtnRect(i), on = ev.id === 'tracker' && trackerRepeat;
       ctx.fillStyle = over(r) ? '#ffffff' : on ? '#fff6a0' : '#140c1c';
@@ -4290,8 +4653,8 @@ function drawAdminPanel() {
       ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
       ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
       ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, 3);
-      drawText(ctx, ev.label, r.x + 6, r.y + 8, 1, '#ffffff', 'left', '#140c1c');
-      if (notes[ev.id]) drawText(ctx, notes[ev.id], r.x + r.w - 6, r.y + 8, 1, on ? '#fff6a0' : '#d8d0e8', 'right', '#140c1c');
+      drawText(ctx, ev.label, r.x + 6, r.y + 7, 1, '#ffffff', 'left', '#140c1c');
+      if (notes[ev.id]) drawText(ctx, notes[ev.id], r.x + r.w - 6, r.y + 7, 1, on ? '#fff6a0' : '#d8d0e8', 'right', '#140c1c');
     });
     return;
   }
@@ -4425,6 +4788,8 @@ const inVolcano = () => state === 'game' && !me.dead && sectionOf(me.y + PLAYER_
 function updateVolcano(dt) {
   const inside = inVolcano();
   lavaAmt = inside ? Math.min(1, lavaAmt + dt / SNOW_FADE_IN) : Math.max(0, lavaAmt - dt / SNOW_FADE_OUT);
+  const onFire = state === 'game' && !me.dead && burning();
+  burnAmt = onFire ? Math.min(1, burnAmt + dt / SNOW_FADE_IN) : Math.max(0, burnAmt - dt / SNOW_FADE_OUT);
   if (lavaAmt === 0) fireRain.length = 0;
   if (inside && fireRain.length < 90) {
     const sparse = fireRain.length < 15;
@@ -4491,15 +4856,28 @@ function drawMagmaGlow(cx, cy) {
     }
   }
 }
+// Being on fire gives the same red glow as the volcano (without the falling fire).
+let burnAmt = 0;
 function drawHeat() {
-  if (lavaAmt <= 0) return;
-  ctx.fillStyle = `rgba(255, 80, 20, ${(0.12 * lavaAmt).toFixed(3)})`;
+  const heat = Math.max(lavaAmt, burnAmt);
+  if (heat <= 0) return;
+  ctx.fillStyle = `rgba(255, 80, 20, ${(0.12 * heat).toFixed(3)})`;
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   const gr = ctx.createLinearGradient(0, VIEW_H * 0.55, 0, VIEW_H);
   gr.addColorStop(0, 'rgba(255, 90, 20, 0)');
-  gr.addColorStop(1, `rgba(255, 90, 20, ${(0.22 * lavaAmt).toFixed(3)})`);
+  gr.addColorStop(1, `rgba(255, 90, 20, ${(0.22 * heat).toFixed(3)})`);
   ctx.fillStyle = gr;
   ctx.fillRect(0, VIEW_H * 0.55, VIEW_W, VIEW_H * 0.45);
+  if (burnAmt > 0) {
+    const pulse = 0.8 + 0.2 * Math.sin(time * 6);
+    ctx.fillStyle = `rgba(255, 50, 20, ${(0.1 * burnAmt * pulse).toFixed(3)})`;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    const v = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.35, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.6);
+    v.addColorStop(0, 'rgba(255, 40, 10, 0)');
+    v.addColorStop(1, `rgba(255, 40, 10, ${(0.45 * burnAmt * pulse).toFixed(3)})`);
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
 }
 
 // Draws the part of a world-space image (whose top edge sits at world y = top) that is in view.
@@ -4615,6 +4993,7 @@ function drawGame() {
   drawBucketSpot(cx, cy);
   drawChests(cx, cy);
   drawClovers(cx, cy);
+  drawShard(cx, cy);
   drawStorms(cx, cy, false);
 
   for (const r of remotes.values()) {
@@ -4624,7 +5003,8 @@ function drawGame() {
     if (r.fr) drawIceBlock(r.x - cx, r.y - cy);
     drawNameAndHp(r.n, r.x - cx, r.y - cy, '#ffffff', r.hp, r.maxHp || BASE_HP, r.rb);
     drawChargeBar(r.x - cx, r.y - cy, rch);
-    if (r.lz) drawBeam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], cx, cy);
+    if (r.lz) drawBeam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], cx, cy, r.w && ITEMS[r.w].flame);
+    if (r.bn) burnFx(r.x, r.y);
   }
   if (!me.dead) {
     const mch = me.charging ? me.chargeT / BOW_CHARGE_TIME : -1;
@@ -4639,15 +5019,16 @@ function drawGame() {
     if (performance.now() < me.stunUntil && Math.random() < 0.5) {
       emit(me.x + Math.random() * PLAYER_W, me.y + Math.random() * PLAYER_H, 1, Math.random() < 0.5 ? '#fff6a0' : '#8ad8ff', 30, 0.2);
     }
+    if (burning()) burnFx(me.x, me.y);
     if (heldItem().kind === 'laser') {
       const out = me.laserOut > 0;
-      drawChargeBar(me.x - cx, me.y - cy, out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / LASER_FUEL, out ? '#7a3a3a' : '#ff5a4a');
+      drawChargeBar(me.x - cx, me.y - cy, out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / fuelMax(heldItem()), out ? '#7a3a3a' : '#ff5a4a');
     } else if (heldItem().cooldown >= 1 && me.punchCd > 0) {
       drawChargeBar(me.x - cx, me.y - cy, 1 - me.punchCd / heldItem().cooldown, '#8a8a98');
     } else {
       drawChargeBar(me.x - cx, me.y - cy, mch);
     }
-    if (me.beam) drawBeam(me.beam.x1, me.beam.y1, me.beam.x2, me.beam.y2, cx, cy);
+    if (me.beam) drawBeam(me.beam.x1, me.beam.y1, me.beam.x2, me.beam.y2, cx, cy, heldItem().flame);
   }
   drawBushes(cx, cy);
   drawStorms(cx, cy, true);
