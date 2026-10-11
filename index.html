@@ -270,7 +270,11 @@ for (const s of BASE_LAYOUT) solids.push({ ...s, y: s.y + BASE_Y });
 
 // Purple biome geometry. It only joins `solids` when the biome opens.
 let biomeOpen = false;
-const worldTop = () => (biomeOpen ? BIOME_TOP : 0);
+// After the biome closes, anyone still up there falls back down; the ceiling and
+// camera limit stay raised until they're below the old ceiling.
+let biomeFalling = false;
+let biomeFade = 0;
+const worldTop = () => (biomeOpen || biomeFalling ? BIOME_TOP : 0);
 const biomeSolids = [];
 const bushes = [];
 const hitsAny = (r, list, m) => list.some(s =>
@@ -309,6 +313,85 @@ const hitsAny = (r, list, m) => list.some(s =>
   }
 })();
 const BIOME_PLATS = biomeSolids.filter(s => s.t === P && s.y < 0);
+
+// The big rock on the bottom layer. Breaking it (local to this page load) opens a
+// hole in the ground down to the underground.
+const ROCK_HP = 2000, ROCK_MIN_DAMAGE = 32;
+const rock = { x: 640, y: GROUND_Y - 34, w: 52, h: 34, t: 'rock', hp: ROCK_HP, broken: false, flash: 0 };
+const HOLE = { x: rock.x + 12, w: 28 };
+solids.push(rock);
+const GROUND = solids[0];
+// Whether a box sits inside the open hole, where the ground doesn't hold it up.
+const inHole = (s, x, w) => s === GROUND && rock.broken && x >= HOLE.x && x + w <= HOLE.x + HOLE.w;
+
+// The underground: one section tall and three maps wide, far below the map so
+// nothing up top can see or touch it. A lava pit runs along its bottom.
+const UG_W = WORLD_W * 3, UG_H = SECTION_H;
+const UG_TOP = WORLD_H + 400, UG_BOTTOM = UG_TOP + UG_H;
+const UG_CEIL = 28;
+const LAVA_Y = UG_BOTTOM - 44;
+const UG_SHAFT = { x: 196, w: 28 };
+// The way out: a rope down the shaft to the landing pillar. Hold jump to climb it.
+const ROPE = { x: UG_SHAFT.x + UG_SHAFT.w / 2, y1: UG_TOP, y2: UG_TOP + 398 };
+const ROPE_SPEED = 130, ROPE_REACH = 9;
+const inUnder = y => y > WORLD_H + 100;
+const outOfWorld = (x, y, pad) => inUnder(y)
+  ? x < 0 || x > UG_W || y < UG_TOP - pad || y > UG_BOTTOM
+  : x < 0 || x > WORLD_W || y < worldTop() - pad || y > WORLD_H;
+const ugSolids = [], ugChains = [];
+(function generateUnderground() {
+  const rnd = mulberry32(6060), T = UG_TOP;
+  ugSolids.push(
+    { x: 0, y: T, w: UG_SHAFT.x, h: UG_CEIL, t: 'ugceil' },
+    { x: UG_SHAFT.x + UG_SHAFT.w, y: T, w: UG_W - UG_SHAFT.x - UG_SHAFT.w, h: UG_CEIL, t: 'ugceil' },
+    { x: UG_SHAFT.x, y: T - 16, w: UG_SHAFT.w, h: 16, t: 'ugceil' },
+    { x: 0, y: T, w: 16, h: UG_H, t: 'border' },
+    { x: UG_W - 16, y: T, w: 16, h: UG_H, t: 'border' },
+    { x: 120, y: T + 400, w: 190, h: UG_H - 400, t: 'pillar' },
+  );
+  const hang = (x, y, w) => {
+    ugSolids.push({ x, y: T + y, w, h: 12, t: P });
+    for (const c of w > 120 ? [x + 10, x + w / 2, x + w - 12] : [x + 6, x + w - 8]) ugChains.push({ x: Math.round(c), y1: T + UG_CEIL, y2: T + y });
+  };
+  // A walk to the right. Low platforms are stone pillars standing in the lava, high ones
+  // hang from chains. Some gaps are too wide to cross without a jetpack.
+  // The height drifts toward a slow wave, so the route climbs into the chains and back down.
+  let x = 310, y = 400;
+  for (;;) {
+    const jet = rnd() < 0.15;
+    const target = 290 + 140 * Math.sin(x / 260 + 1.2);
+    const want = Math.round((y - target) / 20) * 20 + (Math.floor(rnd() * 3) - 1) * 20;
+    const rise = jet ? -Math.floor(rnd() * 2) * 20 : Math.max(-80, Math.min(60, want));
+    let gap = jet ? 170 + Math.floor(rnd() * 4) * 10 : 40 + Math.floor(rnd() * 6) * 12;
+    if (rise >= 40) gap = Math.min(gap, 64);
+    const size = rnd();
+    let w = size < 0.15 ? 300 + Math.floor(rnd() * 6) * 40 : size < 0.4 ? 100 + Math.floor(rnd() * 6) * 20 : 36 + Math.floor(rnd() * 5) * 14;
+    x += gap;
+    if (x + 60 > UG_W - 16) break;
+    w = Math.min(w, UG_W - 16 - x);
+    y = Math.max(140, Math.min(430, y - rise));
+    if (y >= 320) {
+      ugSolids.push({ x, y: T + y, w, h: UG_H - y, t: 'pillar' });
+      if (w >= 100 && rnd() < 0.6) hang(x + 20 + Math.floor(rnd() * (w - 80)), y - 76, 40 + Math.floor(rnd() * 3) * 12);
+    } else {
+      hang(x, y, w);
+    }
+    x += w;
+  }
+  // A higher, broken route of small hanging platforms wherever there's room for one,
+  // each a jump and an air jump above the route. They only sit over route platforms,
+  // never over the lava, so they can't bridge a jetpack gap.
+  const route = ugSolids.filter(s => s.t === P || s.t === 'pillar');
+  for (let ux = 250 + Math.floor(rnd() * 60); ux < UG_W - 110;) {
+    const w = 44 + Math.floor(rnd() * 6) * 16;
+    const near = route.filter(s => ux >= s.x - 16 && ux + w <= s.x + s.w + 16);
+    const y = near.length ? Math.max(110, Math.min(...near.map(s => s.y - T)) - 70) : 0;
+    const room = { x: ux, y: T + y - 30, w, h: 42 };
+    const chained = ugChains.some(c => c.x > ux - 8 && c.x < ux + w + 8 && c.y2 > T + y);
+    if (y && !chained && !hitsAny(room, ugSolids, 16)) hang(ux, y, w);
+    ux += w + 70 + Math.floor(rnd() * 5) * 16;
+  }
+})();
 
 // ---------------------------------------------------------------------------
 // Pre-rendered art
@@ -488,7 +571,7 @@ const [levelCanvas, lg] = makeCanvas(WORLD_W, WORLD_H);
   const rnd = mulberry32(1337);
   const lavaRnd = mulberry32(4040);
   for (const s of solids) {
-    if (s.t === 'ceiling') continue;
+    if (s.t === 'ceiling' || s.t === 'rock') continue;
     const sec = sectionOf(s.y + s.h / 2);
     const snowy = sec === SNOW_SECTION, volcanic = sec === VOLCANO_SECTION;
     if (s.t === W || s.t === 'border') {
@@ -504,33 +587,254 @@ const [levelCanvas, lg] = makeCanvas(WORLD_W, WORLD_H);
   }
 })();
 
+// Storm-cloud platforms, drawn on a 2px grid: puffy lumps along the top, a ragged
+// underside, lit from above and with faint lightning flickering inside.
+function drawCloudPlatform(g, s, rnd) {
+  const C = 2, x0 = s.x, y0 = s.y - 2, cols = Math.ceil(s.w / C), rows = Math.ceil((s.h + 8) / C);
+  const tops = [], bottoms = [];
+  for (let x = 6; x < s.w - 4; x += 8 + Math.floor(rnd() * 6)) tops.push([x, 4 + rnd() * 2]);
+  for (let x = 5; x < s.w - 3; x += 6 + Math.floor(rnd() * 6)) bottoms.push([x, 2 + rnd() * 3]);
+  const inside = (cx, cy) => {
+    if (cx < 0 || cy < 0 || cx >= cols || cy >= rows) return false;
+    const px = cx * C + 1, py = cy * C + 1 + y0 - s.y;
+    if (px < 0 || px >= s.w) return false;
+    // Rounded ends
+    const endR = s.h / 2 + 1, ex = px < endR ? endR - px : px > s.w - endR ? px - (s.w - endR) : 0;
+    if (ex > 0 && (ex ** 2 + (py - s.h / 2) ** 2) > endR ** 2) return false;
+    if (py >= 3 && py < s.h - 1) return true;
+    if (py < 3) return tops.some(([bx, r]) => (px - bx) ** 2 + (py - 5) ** 2 <= r * r);
+    return bottoms.some(([bx, r]) => (px - bx) ** 2 + (py - (s.h - 2)) ** 2 <= r * r);
+  };
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      if (!inside(cx, cy)) continue;
+      const edge = !inside(cx - 1, cy) || !inside(cx + 1, cy) || !inside(cx, cy - 1) || !inside(cx, cy + 1);
+      let c;
+      if (edge) c = !inside(cx, cy - 1) ? '#b8a4e8' : '#1c1230';
+      else if (!inside(cx, cy - 2)) c = '#8a74c0';
+      else if (!inside(cx, cy + 2)) c = '#3a2c5c';
+      else c = rnd() < 0.12 ? '#4e3e74' : '#5c4a88';
+      g.fillStyle = c;
+      g.fillRect(x0 + cx * C, y0 + cy * C, C, C);
+    }
+  }
+  // Faint lightning veins inside the cloud
+  for (let i = 0; i < s.w / 50; i++) {
+    if (rnd() < 0.5) continue;
+    let x = s.x + 6 + Math.floor(rnd() * (s.w - 12));
+    for (let y = s.y + 4; y < s.y + s.h - 2; y++) {
+      g.fillStyle = rnd() < 0.3 ? '#e0c8ff' : '#9a6ad8';
+      g.fillRect(x, y, 1, 1);
+      x += rnd() < 0.5 ? -1 : 1;
+    }
+  }
+}
+
 // Covers the biome sections plus its first platform row, which sits in the red area.
+// Clouds get their own images so each one can sink a little under whoever stands on it.
+const CLOUD_PAD = 2;
+const cloudPlats = biomeSolids.filter(s => s.t === P).map(s => ({ s, img: null, sink: 0, v: 0 }));
 const [biomeCanvas, bg] = makeCanvas(WORLD_W, 60 - BIOME_TOP);
 (function buildBiome() {
   const rnd = mulberry32(4242);
-  const purple = GRASS[BIOME_SECTION];
   for (const s of biomeSolids) {
-    const o = { ...s, y: s.y - BIOME_TOP };
-    if (s.t === W || s.t === 'border') drawBrickWall(bg, o, rnd, WALL_TINT[BIOME_SECTION], purple.dark);
-    else drawDirtBlock(bg, o, rnd, purple);
+    if (s.t === W || s.t === 'border') drawBrickWall(bg, { ...s, y: s.y - BIOME_TOP }, rnd, '#3a1a5a', '#8a5ad8', 0.45);
+  }
+  for (const c of cloudPlats) {
+    const [img, g] = makeCanvas(c.s.w, c.s.h + 12 + CLOUD_PAD);
+    drawCloudPlatform(g, { ...c.s, x: 0, y: CLOUD_PAD }, rnd);
+    c.img = img;
   }
 })();
 
-for (const b of bushes) {
-  const [c, g] = makeCanvas(b.w, b.h);
-  // Cartoon style: three round puffs, flat colours, thick outline and a shine dot on each.
-  const puffs = [[10, 14, 8.5], [20, 10, 10], [30, 14, 8.5]];
-  const inside = (x, y) => x >= 0 && y >= 0 && x < b.w && y < b.h &&
-    (puffs.some(([px, py, r]) => (x - px) ** 2 + (y - py) ** 2 <= r * r) || (y >= 15 && x >= 2 && x < b.w - 2));
-  for (let y = 0; y < b.h; y++) {
-    for (let x = 0; x < b.w; x++) {
-      if (!inside(x, y)) continue;
-      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
-      const shine = puffs.some(([px, py, r]) => (x - (px - r * 0.4)) ** 2 + (y - (py - r * 0.4)) ** 2 <= (r * 0.22) ** 2);
-      g.fillStyle = edge ? '#24103a' : shine ? '#c48af0' : y >= b.h - 5 ? '#5a2490' : '#7a3cc0';
-      g.fillRect(x, y, 1, 1);
+// Underground stone: chunky blocks with lit top edges and dark seams.
+const STONE_SHADES = ['#46444f', '#413f4a', '#4c4a56', '#3a3842'];
+function drawStoneBlock(g, s, rnd) {
+  g.fillStyle = '#34323c';
+  g.fillRect(s.x, s.y, s.w, s.h);
+  for (let y = s.y + 3; y < s.y + s.h - 1; y += 5 + Math.floor(rnd() * 3)) {
+    for (let x = s.x - Math.floor(rnd() * 8); x < s.x + s.w; x += 7 + Math.floor(rnd() * 8)) {
+      const x0 = Math.max(s.x + 1, x), x1 = Math.min(s.x + s.w - 1, x + 6 + Math.floor(rnd() * 8));
+      const y1 = Math.min(s.y + s.h - 1, y + 4 + Math.floor(rnd() * 3));
+      if (x1 <= x0 || y1 <= y) continue;
+      g.fillStyle = STONE_SHADES[Math.floor(rnd() * STONE_SHADES.length)];
+      g.fillRect(x0, y, x1 - x0, y1 - y);
+      g.fillStyle = '#56545f';
+      g.fillRect(x0, y, x1 - x0, 1);
+      g.fillStyle = '#25232b';
+      g.fillRect(x0, y1 - 1, x1 - x0, 1);
     }
   }
+  for (let i = 0; i < s.w * s.h / 60; i++) {
+    g.fillStyle = rnd() < 0.08 ? '#6a8a9a' : '#2a2830';
+    g.fillRect(s.x + Math.floor(rnd() * s.w), s.y + 3 + Math.floor(rnd() * Math.max(1, s.h - 4)), 1, 1);
+  }
+  g.fillStyle = '#5e5c6a';
+  g.fillRect(s.x, s.y, s.w, 2);
+  g.fillStyle = '#7e7c8a';
+  g.fillRect(s.x, s.y, s.w, 1);
+  g.fillStyle = '#3e5a3c';
+  for (let x = s.x + 1; x < s.x + s.w - 1; x++) if (rnd() < 0.06) g.fillRect(x, s.y + 2, 1 + Math.floor(rnd() * 2), 1);
+  g.fillStyle = '#16141a';
+  g.fillRect(s.x, s.y + s.h - 1, s.w, 1);
+  g.fillRect(s.x, s.y, 1, s.h);
+  g.fillRect(s.x + s.w - 1, s.y, 1, s.h);
+}
+
+function drawChain(g, x, y1, y2) {
+  for (let y = y1; y < y2 - 1; y += 3) {
+    const ring = ((y - y1) / 3) % 2 === 0;
+    g.fillStyle = '#16141a';
+    g.fillRect(x - 2, y, 5, 3);
+    g.fillStyle = ring ? '#8a8896' : '#5e5c68';
+    if (ring) { g.fillRect(x - 1, y, 3, 1); g.fillRect(x - 1, y + 2, 3, 1); g.fillRect(x - 1, y, 1, 3); g.fillRect(x + 1, y, 1, 3); }
+    else g.fillRect(x, y, 1, 3);
+  }
+  g.fillStyle = '#5e5c68';
+  g.fillRect(x - 2, y2 - 2, 5, 2);
+  g.fillStyle = '#a8a6b4';
+  g.fillRect(x - 1, y2 - 2, 3, 1);
+}
+
+const [ugCanvas, ugg] = makeCanvas(UG_W, UG_H);
+(function buildUnderground() {
+  const rnd = mulberry32(6161);
+  const local = s => ({ ...s, y: s.y - UG_TOP });
+  for (const c of ugChains) drawChain(ugg, c.x, c.y1 - UG_TOP, c.y2 - UG_TOP);
+  for (const s of ugSolids) {
+    if (s.y < UG_TOP) continue;
+    if (s.t === 'border') drawBrickWall(ugg, local(s), rnd, '#1a1622', '#3e5a3c', 0.55);
+    else drawStoneBlock(ugg, local(s), rnd);
+  }
+  // Stalactites under the ceiling
+  for (let x = 20; x < UG_W - 20; x += 6 + Math.floor(rnd() * 22)) {
+    if (x > UG_SHAFT.x - 8 && x < UG_SHAFT.x + UG_SHAFT.w + 8) continue;
+    const len = 4 + Math.floor(rnd() * (rnd() < 0.2 ? 30 : 12)), w = 2 + Math.floor(rnd() * 3);
+    for (let k = 0; k < len; k++) {
+      const half = Math.max(0, Math.round(w * (1 - k / len)));
+      ugg.fillStyle = k === len - 1 ? '#6a8a9a' : '#34323c';
+      ugg.fillRect(x - half, UG_CEIL + k, half * 2 + 1, 1);
+      ugg.fillStyle = '#4c4a56';
+      ugg.fillRect(x - half, UG_CEIL + k, 1, 1);
+    }
+  }
+})();
+// Low detail: every stone is a single flat color.
+const UG_FLAT_STONE = '#46444f';
+const [ugFlatCanvas, ufg] = makeCanvas(UG_W, UG_H);
+(function buildFlatUnderground() {
+  ufg.fillStyle = UG_FLAT_STONE;
+  for (const c of ugChains) ufg.fillRect(c.x, c.y1 - UG_TOP, 1, c.y2 - c.y1);
+  for (const s of ugSolids) if (s.y + s.h > UG_TOP) ufg.fillRect(s.x, s.y - UG_TOP, s.w, s.h);
+})();
+
+// Cave background: rocky ceiling and floor silhouettes on two parallax layers.
+const [caveSky, csg] = makeCanvas(VIEW_W, VIEW_H);
+(function buildCaveSky() {
+  const bands = ['#07050a', '#0a070e', '#0d0912', '#100b16', '#0e0a14', '#0b0810'];
+  const bh = Math.ceil(VIEW_H / bands.length);
+  bands.forEach((c, i) => { csg.fillStyle = c; csg.fillRect(0, i * bh, VIEW_W, bh); });
+})();
+function buildCaveLayer(seed, top, bottom, color, edge, crystals) {
+  const [c, g] = makeCanvas(960, VIEW_H);
+  const rnd = mulberry32(seed);
+  for (let x = 0; x < 960; x += 4) {
+    const t = x / 960 * Math.PI * 2;
+    const up = top + Math.round((Math.sin(t * 3 + seed) * 0.6 + Math.sin(t * 7) * 0.4) * 10 / 4) * 4;
+    const spike = rnd() < 0.18 ? 8 + Math.floor(rnd() * 26) : 0;
+    g.fillStyle = color;
+    g.fillRect(x, 0, 4, up);
+    if (spike) g.fillRect(x + 1, up, 2, spike);
+    g.fillStyle = edge;
+    g.fillRect(x, up - 1, 4, 1);
+    const down = bottom - Math.round((Math.sin(t * 4 + seed * 2) * 0.6 + Math.sin(t * 9) * 0.4) * 12 / 4) * 4;
+    const mite = rnd() < 0.15 ? 6 + Math.floor(rnd() * 22) : 0;
+    g.fillStyle = color;
+    g.fillRect(x, down, 4, VIEW_H - down);
+    if (mite) g.fillRect(x + 1, down - mite, 2, mite);
+    g.fillStyle = edge;
+    g.fillRect(x, down, 4, 1);
+  }
+  for (let i = 0; crystals && i < 40; i++) {
+    g.fillStyle = rnd() < 0.5 ? '#6a4ab0' : '#3a8a9a';
+    const x = Math.floor(rnd() * 960), y = rnd() < 0.5 ? Math.floor(rnd() * top) : bottom + Math.floor(rnd() * (VIEW_H - bottom));
+    g.fillRect(x, y, 1, 2);
+  }
+  return c;
+}
+const caveFar = buildCaveLayer(11, 70, 200, '#16121e', '#221c2c', true);
+const caveNear = buildCaveLayer(23, 40, 230, '#0c0a12', '#16121e', false);
+function drawCaveBackground(g, camX) {
+  g.drawImage(caveSky, 0, 0);
+  for (const [img, fx] of [[caveFar, 0.15], [caveNear, 0.35]]) {
+    const ox = -Math.round(camX * fx) % img.width;
+    for (let x = ox; x < VIEW_W; x += img.width) g.drawImage(img, x, 0);
+  }
+}
+
+// The big rock: a lumpy boulder on a 2px grid, plus cracks that spread as it takes damage.
+const [rockImg, rkg] = makeCanvas(rock.w, rock.h);
+const rockCracks = [];
+(function buildRock() {
+  const rnd = mulberry32(919), C = 2, cols = rock.w / C, rows = rock.h / C;
+  const inside = (cx, cy) => {
+    if (cx < 0 || cy < 0 || cx >= cols || cy >= rows) return false;
+    const nx = (cx + 0.5) / cols * 2 - 1, ny = 1 - (cy + 0.5) / rows;
+    return nx * nx + Math.pow(Math.max(0, ny - 0.15) / 0.85, 2) * (1 + 0.15 * Math.sin(nx * 9)) <= 1;
+  };
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      if (!inside(cx, cy)) continue;
+      const edge = !inside(cx - 1, cy) || !inside(cx + 1, cy) || !inside(cx, cy - 1);
+      let col;
+      if (edge) col = '#1c1a22';
+      else if (!inside(cx, cy - 2) || !inside(cx - 2, cy)) col = '#9a96a6';
+      else if (!inside(cx + 2, cy) || cy >= rows - 2) col = '#4a4654';
+      else col = rnd() < 0.15 ? '#625e6e' : rnd() < 0.1 ? '#7e7a8a' : '#6e6a7a';
+      rkg.fillStyle = col;
+      rkg.fillRect(cx * C, cy * C, C, C);
+    }
+  }
+  for (let i = 0; i < 8; i++) {
+    let x = 8 + Math.floor(rnd() * (rock.w - 16)), y = 6 + Math.floor(rnd() * 8);
+    const pts = [[x, y]];
+    for (let k = 0; k < 6; k++) {
+      x += Math.floor(rnd() * 5) - 2;
+      y += 2 + Math.floor(rnd() * 2);
+      if (y >= rock.h - 2) break;
+      pts.push([x, y]);
+    }
+    rockCracks.push(pts);
+  }
+})();
+
+const BUSH_SPRITE = [
+  '........ooooo.......',
+  '..oooo.osHHmmo......',
+  '.osHHmoosHmmmmoooo..',
+  'osHmmmmoHmmmmmmosHo.',
+  'oHmmmmmmoHmmmmmmoHmo',
+  'ommmmmmmmmmmmmmmmmmo',
+  'ommmmmmmmmmmmmmmmmmo',
+  'odmmmmmmdmmmmmmmdmmo',
+  'oddddddddddddddddddo',
+  'oDDDDDDDDDDDDDDDDDDo',
+  '.oooooooooooooooooo.',
+];
+for (const b of bushes) {
+  const [c, g] = makeCanvas(b.w, b.h);
+  // Chunky pixel sprite on a 2px grid: three lumps, outline, flat shading bands.
+  const pal = { o: '#1a0a2a', s: '#d8a8ff', H: '#9a5ad8', m: '#7a3cc0', d: '#5e2a96', D: '#4a1c7a' };
+  const rnd = mulberry32(b.x * 7 + b.y);
+  BUSH_SPRITE.forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) {
+      let ch = row[x];
+      if (ch === '.') continue;
+      if (ch === 'm' && y >= 5 && rnd() < 0.1) ch = 'd';
+      g.fillStyle = pal[ch];
+      g.fillRect(x * 2, y * 2, 2, 2);
+    }
+  });
   b.img = c;
 }
 
@@ -575,6 +879,7 @@ const hillsNear = buildHills(960, VIEW_H, 3, 215, 40, '#1d1433', '#2a1d47');
 
 function drawBackground(g, camX, camY) {
   g.drawImage(skyCanvas, 0, 0);
+  drawStormSky(g, camX);
   const layers = [[hillsFar, 0.12, 0.04], [hillsNear, 0.25, 0.08]];
   for (const [img, fx, fy] of layers) {
     const ox = -Math.round(camX * fx) % img.width;
@@ -743,6 +1048,34 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
         for (let c = 6; c <= 14; c++) px(c, r, r === -4 ? light : r === 0 ? dark : it.color);
       }
     }
+  } else if (it.style === 'torch') {
+    const f = Math.floor(time * 10) % 3, head = '#3a2a24';
+    if (attacking) {
+      for (let c = 13; c <= 18; c++) px(c, 6, hilt);
+      for (let r = 5; r <= 7; r++) px(19, r, head);
+      px(20, 5, '#ff6a1a'); px(20, 6, '#ffb040'); px(20, 7, '#ff6a1a');
+      px(21, 6, '#ffe08a'); px(21 + (f === 1 ? 1 : 0), f === 2 ? 5 : 6, '#ffb040');
+    } else {
+      for (let r = 0; r <= 9; r++) px(10, r, hilt);
+      for (let c = 9; c <= 11; c++) px(c, -1, head);
+      px(9, -2, '#ff6a1a'); px(10, -2, '#ffb040'); px(11, -2, '#ff6a1a');
+      px(10, -3, '#ffe08a'); px(9 + f, -4, '#ffb040');
+      if (f === 0) px(10, -5, '#ff6a1a');
+    }
+  } else if (it.style === 'trident') {
+    const light = shade(it.color, 0.35);
+    if (attacking) {
+      const end = 5 + it.range;
+      for (let c = 13; c < end - 2; c++) px(c, 6, hilt);
+      for (let r = 4; r <= 8; r++) px(end - 2, r, it.color);
+      for (const r of [4, 6, 8]) { px(end - 1, r, it.color); px(end, r, light); }
+      px(end + 1, 6, light);
+    } else {
+      for (let r = -4; r <= 9; r++) px(10, r, hilt);
+      for (let c = 8; c <= 12; c++) px(c, -5, it.color);
+      for (const c of [8, 10, 12]) { px(c, -6, it.color); px(c, -7, light); }
+      px(10, -8, light);
+    }
   } else if (it.kind === 'shuriken') {
     if (!attacking) {
       for (const [c, r] of [[11, 5], [10, 6], [12, 6], [11, 7]]) px(c, r, it.color);
@@ -751,9 +1084,16 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
   } else if (it.kind === 'staff') {
     for (let r = -3; r <= 9; r++) px(10, r, hilt);
     const glow = Math.floor(time * 12) % 2;
+    const spark = it.strike ? '#fff27a' : '#ffb040';
     for (const [c, r] of [[9, -5], [10, -5], [11, -5], [10, -6], [9, -4], [10, -4], [11, -4]]) px(c, r, it.color);
-    px(10, -5, glow ? '#fff2b0' : '#ffb040');
-    if (glow) px(10, -7, '#ffb040');
+    px(10, -5, glow ? (it.strike ? '#ffffff' : '#fff2b0') : spark);
+    if (glow) px(10, -7, spark);
+    if (it.strike && !glow) { px(8, -6, spark); px(12, -3, spark); }
+  } else if (it.bubble) {
+    for (let c = 10; c <= 15; c++) px(c, 5, c === 15 ? '#e8e8f0' : it.color);
+    for (let r = 6; r <= 8; r++) for (let c = 9; c <= 11; c++) px(c, r, r === 6 ? shade(it.color, 0.3) : shade(it.color, -0.2));
+    const b = Math.floor(time * 6) % 3;
+    px(16 + b, 4 - b, '#bff4ff');
   } else if (it.flame) {
     for (let c = 10; c <= 15; c++) px(c, 5, '#5a5a68');
     for (let r = 6; r <= 8; r++) for (let c = 9; c <= 11; c++) px(c, r, r === 6 ? shade(it.color, 0.3) : it.color);
@@ -772,7 +1112,7 @@ function drawHeldItem(g, x, y, facing, it, attacking, charge) {
       }
       px(end + 1, it.style === 'katana' ? 5 : 6, it.color);
     } else {
-      const h = it.style === 'katana' ? 11 : 8;
+      const h = it.style === 'katana' ? 11 : it.style === 'dagger' ? 5 : 8;
       for (let r = 8 - h; r < 8; r++) px(10, r, r === 8 - h ? shade(it.color, 0.4) : it.color);
       if (it.style === 'katana') px(11, 8 - h, it.color);
       px(9, 8, guard); px(10, 8, guard); px(11, 8, guard);
@@ -909,10 +1249,20 @@ const BIOME_CHANCE = 0.25;
 const BIOME_DURATION = 120;
 const STORM_ROLL_INTERVAL = 10;
 const STORM_CHANCE = 0.1; // per biome platform, every STORM_ROLL_INTERVAL
+const THUNDER_CHEST_STORM_CHANCE = 0.5; // instead, for a platform with a thunder chest on it
+const RAIN_FIRE_MULT = 0.7; // fire weapons used in the thunder biome's rain
+const RAIN_FIRE_ALPHA = 0.5;
+const rainyAt = y => biomeOpen && sectionOf(y) >= BIOME_SECTION;
 const STORM_DELAY = 1;
 const STORM_CLOUD_H = 80;
 const LIGHTNING_DAMAGE = 50;
 const STUN_TIME = 1;
+// Thunder chest loot.
+const TRIDENT_HOLD = 0.3, TRIDENT_SPEED = 480, TRIDENT_OUT = 0.35, TRIDENT_BACK = 0.5, TRIDENT_FLY_JUMPS = 7;
+const BUBBLE_HOLD = 2, BUBBLE_JUMPS = 20, BUBBLE_COOLDOWN = 5;
+const BLAST_RADIUS = 64, BLAST_DAMAGE = 100, BLAST_COOLDOWN = 60;
+const STAFF_STRIKE_W = 60;
+const KNOCKBACK_X = 330, KNOCKBACK_Y = 170;
 // Freeze Power only works inside the snow biome.
 const FREEZE_AIR_JUMPS = 3;
 const FREEZE_DAMAGE_MULT = 1.5;
@@ -923,7 +1273,14 @@ const FROZEN_TIME = 1;
 
 function overlaps(x, y, w, h) {
   for (const s of solids) {
-    if (x < s.x + s.w && x + w > s.x && y < s.y + s.h && y + h > s.y) return s;
+    if (x < s.x + s.w && x + w > s.x && y < s.y + s.h && y + h > s.y && !inHole(s, x, w)) return s;
+  }
+  return null;
+}
+// Like overlaps, but floating platforms don't count (walls, ground and borders still do).
+function overlapsSolid(x, y, w, h) {
+  for (const s of solids) {
+    if (s.t !== P && x < s.x + s.w && x + w > s.x && y < s.y + s.h && y + h > s.y && !inHole(s, x, w)) return s;
   }
   return null;
 }
@@ -978,6 +1335,7 @@ let dashQueued = 0;
 let powerQueued = '';
 let burstQueued = false;
 let jetQueued = false;
+let tridentFlyQueued = false;
 let middleHeld = false;
 let mouseLeftHeld = false;
 const lastTap = { dir: 0, t: 0 };
@@ -1009,6 +1367,7 @@ addEventListener('keydown', e => {
     e.preventDefault();
     if (!e.repeat) toggleAdmin();
   }
+  if (e.code === 'KeyM' && !e.repeat) toggleSound();
   const benchKey = e.code === 'KeyE' || e.code === 'ShiftLeft' || e.code === 'ShiftRight';
   if (benchKey && !e.repeat && state === 'game' && !me.dead) {
     if (craftOpen || storageOpen) craftOpen = storageOpen = false;
@@ -1017,13 +1376,13 @@ addEventListener('keydown', e => {
     else if (e.code === 'KeyE') {
       inventoryOpen = !inventoryOpen;
       if (inventoryOpen) {
-        pickerOpen = false;
+        pickerOpen = settingsOpen = false;
         closeAdmin();
       }
     }
   }
   if (e.code === 'Escape') {
-    inventoryOpen = pickerOpen = craftOpen = storageOpen = false;
+    inventoryOpen = pickerOpen = craftOpen = storageOpen = settingsOpen = false;
     closeAdmin();
   }
   if (!e.repeat && !keys.has(e.code)) {
@@ -1066,6 +1425,86 @@ const PLAY_BTN = { x: VIEW_W / 2 - 50, y: 140, w: 100, h: 30 };
 const RESPAWN_BTN = { x: VIEW_W / 2 - 110, y: 140, w: 100, h: 30 };
 const LEAVE_BTN = { x: VIEW_W / 2 + 10, y: 140, w: 100, h: 30 };
 const COLOR_BTN = { x: VIEW_W / 2 - 32, y: 4, w: 64, h: 14 };
+const SETTINGS_BTN = { x: COLOR_BTN.x + COLOR_BTN.w + 4, y: 4, w: 14, h: 14 };
+const MUTE_BADGE = { x: SETTINGS_BTN.x + SETTINGS_BTN.w + 4, y: 4, w: 50, h: 14 };
+const SETTINGS_PANEL = { x: VIEW_W / 2 - 110, y: 26, w: 220, h: 172 };
+const SETTINGS_TABS = [{ id: 'audio', label: 'AUDIO' }, { id: 'visual', label: 'VISUAL' }];
+const settingsTabRect = i => ({ x: SETTINGS_PANEL.x + 6 + i * 106, y: SETTINGS_PANEL.y + 17, w: 102, h: 14 });
+const SOUND_BTN = { x: SETTINGS_PANEL.x + 12, y: SETTINGS_PANEL.y + 38, w: SETTINGS_PANEL.w - 24, h: 16 };
+const VOL_KEYS = ['music', 'sfx'];
+const volSliderRect = i => ({ x: SETTINGS_PANEL.x + 12, y: SETTINGS_PANEL.y + 70 + i * 26, w: SETTINGS_PANEL.w - 24, h: 6 });
+const AMBIENT_TOGGLES = [{ key: 'wind', label: 'WIND' }, { key: 'rain', label: 'RAIN' }, { key: 'thunder', label: 'THUNDER' }, { key: 'mining', label: 'MINING' }];
+const ambientRect = i => ({ x: SETTINGS_PANEL.x + 12 + i * 50, y: SETTINGS_PANEL.y + 112, w: 46, h: 18 });
+const VOL_BTNS = [{ id: 'reset', label: 'RESET 100' }, { id: 'save', label: 'SAVE MINE' }, { id: 'load', label: 'USE MINE' }];
+const volBtnRect = i => ({ x: SETTINGS_PANEL.x + 12 + i * 67, y: SETTINGS_PANEL.y + 136, w: 62, h: 14 });
+const RESET_VOL_BTN = volBtnRect(0);
+const LOW_DETAIL_BTN = SOUND_BTN;
+const FLASHES_BTN = { ...SOUND_BTN, y: SOUND_BTN.y + 22 };
+let settingsOpen = false, settingsTab = 'audio', volDrag = null;
+
+function toggleSettings() {
+  settingsOpen = !settingsOpen;
+  if (settingsOpen) {
+    inventoryOpen = pickerOpen = craftOpen = storageOpen = false;
+    closeAdmin();
+  }
+}
+
+function setVolFromMouse() {
+  const r = volSliderRect(VOL_KEYS.indexOf(volDrag));
+  settings[volDrag] = Math.round(clamp01((mouse.x - r.x) / r.w) * VOL_MAX / 5) * 5;
+  applyVolumes();
+}
+
+function settingsClick() {
+  SETTINGS_TABS.forEach((t, i) => {
+    if (over(settingsTabRect(i)) && settingsTab !== t.id) {
+      settingsTab = t.id;
+      sfx('select');
+    }
+  });
+  const flip = key => {
+    settings[key] = !settings[key];
+    saveSettings();
+    sfx('select');
+  };
+  if (settingsTab === 'audio') {
+    if (over(SOUND_BTN)) toggleSound();
+    VOL_KEYS.forEach((k, i) => {
+      const r = volSliderRect(i);
+      if (!over({ x: r.x - 4, y: r.y - 6, w: r.w + 8, h: r.h + 12 })) return;
+      volDrag = k;
+      setVolFromMouse();
+    });
+    AMBIENT_TOGGLES.forEach((a, i) => {
+      if (!over(ambientRect(i))) return;
+      flip(a.key);
+      musicRegionNow = null;
+    });
+    VOL_BTNS.forEach((b, i) => {
+      if (!over(volBtnRect(i))) return;
+      if (b.id === 'save') {
+        settings.saved = { music: settings.music, sfx: settings.sfx };
+        showToast('SAVED: MUSIC ' + settings.music + ' / SFX ' + settings.sfx, '#6ad46a');
+      } else if (b.id === 'load') {
+        if (!settings.saved) {
+          showToast('NOTHING SAVED YET - PRESS SAVE MINE', '#ff9a3d');
+          return;
+        }
+        settings.music = settings.saved.music;
+        settings.sfx = settings.saved.sfx;
+      } else {
+        settings.music = settings.sfx = 100;
+      }
+      applyVolumes();
+      saveSettings();
+      sfx('select');
+    });
+  } else {
+    if (over(LOW_DETAIL_BTN)) flip('lowDetail');
+    if (over(FLASHES_BTN)) flip('flashes');
+  }
+}
 const PICKER = { x: VIEW_W / 2 - 64, y: 21, w: 128, h: 76 };
 const SV_RECT = { x: PICKER.x + 4, y: PICKER.y + 4, w: 100, h: 68 };
 const HUE_RECT = { x: PICKER.x + 110, y: PICKER.y + 4, w: 14, h: 68 };
@@ -1094,6 +1533,8 @@ const RECIPES = [
   { key: 'luck_potion', needs: [['clover', 5], ['water', 1]], desc: () => LUCK_MULT + 'X CHEST LUCK FOR 2 MINUTES' },
   { key: 'miners_gauntlet', needs: [['ice_gauntlet', 1], ['stone_pickaxe', 2], ['iron_sword', 3]] },
   { key: 'frozen_pickaxe', needs: [['ice_shard', 3], ['iron_pickaxe', 1]] },
+  // keep: needed for the recipe, but not used up.
+  { key: 'torch', needs: [['wood_sword', 1], ['fireball_staff', 1]], keep: ['fireball_staff'], desc: () => 'LIGHTS THE DARK. KEEPS THE STAFF' },
 ];
 const craftTabRect = i => ({ x: CRAFT_PANEL.x + 6 + i * 24, y: CRAFT_PANEL.y + 18, w: 20, h: 20 });
 let craftSel = 0;
@@ -1103,7 +1544,9 @@ const nearBench = () => !me.dead
   && me.y + PLAYER_H > BENCH.y - 20 && me.y < BENCH.y + BENCH.h;
 const canCraft = r => r.needs.every(([key, n]) => itemCount(key) >= n);
 function openCraft() {
+  sfx('open');
   craftOpen = true;
+  settingsOpen = false;
   inventoryOpen = pickerOpen = storageOpen = false;
   closeAdmin();
 }
@@ -1182,6 +1625,7 @@ function transferItem(item, from, to, cap) {
 
 function storeItem(item) {
   if (!transferItem(item, inventory, storage, STORAGE_SIZE)) showToast('STORAGE FULL (' + STORAGE_SIZE + ' SLOTS)', '#ff8a8a');
+  else sfx('store');
   saveStorage();
 }
 
@@ -1191,7 +1635,9 @@ function takeItem(item) {
 }
 
 function openStorage() {
+  sfx('open');
   storageOpen = true;
+  settingsOpen = false;
   inventoryOpen = pickerOpen = craftOpen = false;
   closeAdmin();
 }
@@ -1207,8 +1653,9 @@ function craftItem(r) {
     showToast('INVENTORY FULL', '#ff8a8a');
     return;
   }
-  for (const [key, n] of r.needs) removeItems(key, n);
+  for (const [key, n] of r.needs) if (!(r.keep && r.keep.includes(key))) removeItems(key, n);
   addItem(r.key);
+  sfx('craft');
   showToast('CRAFTED ' + ITEMS[r.key].name + '!', ITEMS[r.key].color);
 }
 
@@ -1243,8 +1690,20 @@ canvas.addEventListener('pointerdown', e => {
   if (over(COLOR_BTN)) {
     pickerOpen = !pickerOpen;
     if (pickerOpen) {
-      inventoryOpen = craftOpen = storageOpen = false;
+      inventoryOpen = craftOpen = storageOpen = settingsOpen = false;
       closeAdmin();
+    }
+    return;
+  }
+  if (over(SETTINGS_BTN)) {
+    toggleSettings();
+    return;
+  }
+  if (settingsOpen) {
+    if (over(SETTINGS_PANEL)) {
+      if (e.button === 0) settingsClick();
+    } else {
+      settingsOpen = false;
     }
     return;
   }
@@ -1267,7 +1726,11 @@ canvas.addEventListener('pointerdown', e => {
   }
   if (craftOpen && over(CRAFT_PANEL)) {
     if (e.button === 0 && over(CRAFT_BTN)) craftItem(RECIPES[craftSel]);
-    RECIPES.forEach((r, i) => { if (e.button === 0 && over(craftTabRect(i))) craftSel = i; });
+    RECIPES.forEach((r, i) => {
+      if (e.button !== 0 || !over(craftTabRect(i))) return;
+      craftSel = i;
+      sfx('select');
+    });
     if (e.button === 0 && over(DUMP_BTN)) dumpWater();
     return;
   }
@@ -1278,7 +1741,10 @@ canvas.addEventListener('pointerdown', e => {
   if (inventoryOpen && over(INV_PANEL)) {
     if (e.button === 2) {
       for (let i = 0; i < inventory.length; i++) {
-        if (over(invSlotRect(i))) { inventory[i].marked = !inventory[i].marked; return; }
+        if (!over(invSlotRect(i))) continue;
+        inventory[i].marked = !inventory[i].marked;
+        sfx(inventory[i].marked ? 'mark' : 'unmark');
+        return;
       }
       return;
     }
@@ -1311,7 +1777,9 @@ canvas.addEventListener('pointerdown', e => {
   }
   if (e.button === 2) {
     const kind = heldItem().kind;
-    if (kind === 'bow') {
+    if (heldItem().style === 'trident') {
+      tridentFlyQueued = true;
+    } else if (kind === 'bow') {
       me.charging = true;
       me.chargeT = 0;
     } else if (kind === 'shuriken') {
@@ -1331,6 +1799,10 @@ canvas.addEventListener('pointerdown', e => {
     }
     return;
   }
+  if (e.button === 0 && e.shiftKey && ITEMS[powerKey()] && ITEMS[powerKey()].blast) {
+    powerQueued = 'shift';
+    return;
+  }
   if (e.button === 0) {
     punchQueued = 'mouse';
     mouseLeftHeld = true;
@@ -1338,9 +1810,15 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   toCanvas(e);
-  if (dragTarget) applyPick();
+  if (volDrag) setVolFromMouse();
+  else if (dragTarget) applyPick();
 });
 addEventListener('pointerup', e => {
+  if (volDrag) {
+    volDrag = null;
+    saveSettings();
+    sfx('select');
+  }
   if (dragTarget) {
     dragTarget = null;
     saveProfile();
@@ -1429,6 +1907,18 @@ function stepPlayer(p, dt) {
   }
   p.vy = Math.min(p.vy, MAX_FALL);
 
+  p.climbing = jumpHeld && onRope(p);
+  if (p.climbing) {
+    p.vy = -ROPE_SPEED;
+    p.vx = 0;
+    p.x += (ROPE.x - PLAYER_W / 2 - p.x) * Math.min(1, dt * 20);
+    p.jetting = p.launching = false;
+    p.dashT = 0;
+    jumpPressedQueued = jetQueued = false;
+    p.jumpBuffer = 0;
+    if (p.y <= ROPE.y1 + 2) { climbOut(); return; }
+  }
+
   // Jetpack: middle click, or keep holding jump once you start falling.
   if (powerKey() === 'jetpack') {
     if (!p.jetting && !p.jetEmpty && p.jetFuel > 0.02 && (jetQueued || (jumpHeld && !p.onGround && p.vy >= 0 && p.wallDir === 0))) {
@@ -1472,6 +1962,7 @@ function stepPlayer(p, dt) {
       p.vy = -JUMP_V;
       p.coyote = 0;
       p.jumpBuffer = 0;
+      sfx('jump');
       emit(p.x + PLAYER_W / 2, p.y + PLAYER_H, 6, '#e8dcc8', 50, 0.35);
     } else if (p.wallDir !== 0) {
       p.vx = -p.wallDir * WALL_JUMP_X;
@@ -1480,23 +1971,33 @@ function stepPlayer(p, dt) {
       p.lock = WALL_JUMP_LOCK;
       p.jumpBuffer = 0;
       p.airJumps = maxAirJumps();
+      sfx('wallJump');
       emit(p.x + (p.wallDir > 0 ? PLAYER_W : 0), p.y + PLAYER_H / 2, 8, '#ffffff', 70, 0.35);
-    } else if (p.airJumps > 0) {
+    } else if (p.airJumps > 0 && !p.launching) {
       p.airJumps--;
       p.vy = -AIR_JUMP_V;
       p.jumpBuffer = 0;
       p.airJumpCount++;
+      sfx('airJump');
       airRing(p.x + PLAYER_W / 2, p.y + PLAYER_H, p.color);
     }
   }
 
   // Variable jump height
-  if (!jumpHeld && p.jumpHeldPrev && p.vy < 0) p.vy *= 0.5;
+  if (!jumpHeld && p.jumpHeldPrev && p.vy < 0 && !p.launching) p.vy *= 0.5;
   p.jumpHeldPrev = jumpHeld;
+
+  // A launch ends at the top of its arc, on top of any platform it rose into.
+  if (p.launching && p.vy >= 0) {
+    p.launching = false;
+    const inside = overlaps(p.x, p.y, PLAYER_W, PLAYER_H);
+    if (inside && inside.t === P) p.y = inside.y - PLAYER_H;
+  }
+  const hit = p.launching ? overlapsSolid : overlaps;
 
   // Move X
   p.x += p.vx * dt;
-  let s = overlaps(p.x, p.y, PLAYER_W, PLAYER_H);
+  let s = hit(p.x, p.y, PLAYER_W, PLAYER_H);
   if (s) {
     p.x = p.vx > 0 ? s.x - PLAYER_W : s.x + s.w;
     p.vx = 0;
@@ -1505,7 +2006,7 @@ function stepPlayer(p, dt) {
   const wasAir = !p.onGround;
   const fallSpeed = p.vy;
   p.y += p.vy * dt;
-  s = overlaps(p.x, p.y, PLAYER_W, PLAYER_H);
+  s = hit(p.x, p.y, PLAYER_W, PLAYER_H);
   if (s) {
     if (p.vy > 0) {
       p.y = s.y - PLAYER_H;
@@ -1516,10 +2017,17 @@ function stepPlayer(p, dt) {
     p.vy = 0;
   }
 
-  if (p.y > WORLD_H + 50) spawn(p);
+  if (inUnder(p.y)) {
+    if (p.y + PLAYER_H > LAVA_Y + 4) { lavaDeath(); return; }
+  } else if (p.y > GROUND_Y + 2 && rock.broken) {
+    enterUnderground();
+  } else if (p.y > WORLD_H + 50) {
+    spawn(p);
+  }
 
   // Animation
   if (p.onGround) p.anim = Math.abs(p.vx) > 10 ? 1 : 0;
+  else if (p.climbing) p.anim = 2;
   else if (sliding) { p.anim = 4; p.facing = -p.wallDir; }
   else p.anim = p.vy < 0 ? 2 : 3;
 }
@@ -1610,6 +2118,8 @@ function packState() {
     rb: radarActive() ? 1 : 0, jt: me.jetting ? 1 : 0, bu: myBush(),
     pw: powerKey(), fr: performance.now() < me.frozenUntil ? 1 : 0, bn: burning() ? 1 : 0,
     lz: me.beam ? [Math.round(me.beam.x2), Math.round(me.beam.y2)] : 0,
+    to: me.tridentOut ? 1 : 0, lc: me.launching ? 1 : 0, sn: performance.now() < me.stunUntil ? 1 : 0,
+    tc: hasTorch() ? 1 : 0,
   };
 }
 function broadcastState() {
@@ -1630,7 +2140,11 @@ function onRemote(id, d) {
     remotes.set(id, r);
   }
   if ((d.j | 0) > r.j) airRing(d.x + PLAYER_W / 2, d.y + PLAYER_H, color);
-  if ((d.p | 0) > r.p) r.punchT = PUNCH_TIME;
+  if ((d.p | 0) > r.p) {
+    r.punchT = PUNCH_TIME;
+    const swing = swingSfx(d.w);
+    if (swing && !hiddenFromMe(r)) sfx(swing, d.x, d.y, 0.8);
+  }
   if (dead && !r.dead) deathBurst(r.x, r.y, r.c || color);
   if (!dead && r.dead) { r.x = d.x; r.y = d.y; }
   r.j = d.j | 0;
@@ -1651,6 +2165,15 @@ function onRemote(id, d) {
   r.bn = !!d.bn;
   r.bu = Number.isInteger(d.bu) && d.bu >= 0 && d.bu < bushes.length ? d.bu : -1;
   r.lz = Array.isArray(d.lz) && Number.isFinite(d.lz[0]) && Number.isFinite(d.lz[1]) ? [d.lz[0], d.lz[1]] : null;
+  r.to = !!d.to;
+  r.tc = !!d.tc;
+  if (d.lc && !r.lc && r.pw === 'bubble_burst' && !hiddenFromMe(r)) {
+    sfx('bubbleBurst', d.x, d.y, 0.8);
+    bubbleColumn(d.x + PLAYER_W / 2, d.y + PLAYER_H);
+  }
+  r.lc = !!d.lc;
+  if (d.sn && !r.sn && !hiddenFromMe(r)) sfx('stun', d.x, d.y, 0.8);
+  r.sn = !!d.sn;
   r.tx = d.x; r.ty = d.y;
   r.vx = Number(d.vx) || 0; r.vy = Number(d.vy) || 0;
   r.f = d.f < 0 ? -1 : 1;
@@ -1669,6 +2192,14 @@ function validateHit(d, ax, ay, tx, ty, slackX, forChest) {
   if (!it) return null;
   const damage = itemDamage(it, d, forChest);
   // max hits per window (ms); generous enough for network bunching.
+  if (it.blast) {
+    if (Math.hypot(ax - tx, ay - ty) > BLAST_RADIUS + 40) return null;
+    return { damage, item: it, max: forChest ? 12 : 1, window: BLAST_COOLDOWN * 900, key: 'blast' };
+  }
+  if (it.throwDamage && d.th) {
+    if (Math.hypot(ax - tx, ay - ty) > TRIDENT_SPEED * TRIDENT_OUT + 80) return null;
+    return { damage, item: it, max: 1, window: (TRIDENT_OUT + TRIDENT_BACK) * 700, key: 'thrown' };
+  }
   if (it.kind === 'bow' || it.kind === 'shuriken' || it.kind === 'staff') {
     if (Math.hypot(ax - tx, ay - ty) > (it.speed || ARROW_SPEED) * ARROW_LIFE + 80) return null;
     return it.kind === 'shuriken'
@@ -1699,6 +2230,8 @@ function onHit(id, d) {
   const hit = validateHit(d, r.tx, r.ty, me.x, me.y, 28, false);
   if (!hit || hit.damage <= 0 || !allowHit(r, 'hits_' + hit.key, hit)) return;
 
+  const thud = hit.item.kind === 'melee' && punchSfx(d.w);
+  if (thud) sfx(thud);
   const inSnow = sectionOf(r.ty + PLAYER_H) === SNOW_SECTION;
   const damage = d.fz && remoteBoosted(r) ? Math.round(hit.damage * FREEZE_DAMAGE_MULT) : hit.damage;
   if (Math.random() < thornsChance() && sendThorns) {
@@ -1706,6 +2239,8 @@ function onHit(id, d) {
     emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 10, '#ff6a1a', 70, 0.35);
   }
   if (takeDamage(damage, r.n)) return;
+  if (hit.item.knockback) knockBack(r.tx);
+  if (hit.item.stun && Math.random() < hit.item.stun) stunMe();
   if (hit.item.freeze && Math.random() < (inSnow ? FROZEN_CHANCE_SNOW : FROZEN_CHANCE)) freezeMe();
   if (hit.item.burn && d.burn) setOnFire(MAGMA_BURN_TIME, r.n);
   if (hit.item.kind === 'staff' && Math.random() < (inVolcano() ? FIREBALL_BURN_CHANCE_VOLCANO : FIREBALL_BURN_CHANCE)) setOnFire(FIREBALL_BURN_TIME, r.n);
@@ -1715,6 +2250,7 @@ function onHit(id, d) {
 function takeDamage(damage, killer) {
   me.hp = Math.max(0, me.hp - damage);
   me.flash = HURT_FLASH;
+  sfx('hurt');
   addDamageNumber(me.x, me.y, damage);
   if (sendDamage) {
     try { sendDamage({ a: damage, hp: me.hp }); } catch (e) { /* ignore */ }
@@ -1758,12 +2294,34 @@ function tickBurn() {
   const now = performance.now();
   while (me.burnNext <= now && me.burnNext <= me.burnUntil + 1) {
     me.burnNext += 1000;
+    sfx('burn');
     if (takeDamage(BURN_DAMAGE, me.burnBy)) return;
   }
   if (now > me.burnUntil) {
     me.burnUntil = 0;
     broadcastState();
   }
+}
+
+// Bubbles shove the victim away from the shooter and briefly cut their air control.
+function knockBack(fromX) {
+  const dir = Math.sign(me.x - fromX) || -me.facing;
+  me.vx = dir * KNOCKBACK_X;
+  me.vy = Math.min(me.vy, -KNOCKBACK_Y);
+  me.lock = 0.3;
+  me.dashT = 0;
+}
+
+function stunMe() {
+  me.stunUntil = Math.max(me.stunUntil, performance.now() + STUN_TIME * 1000);
+  me.vx = 0;
+  me.jetting = false;
+  me.dashT = 0;
+  me.charging = false;
+  sfx('stun');
+  emit(me.x + PLAYER_W / 2, me.y, 10, '#fff6a0', 40, 0.5);
+  showToast('YOU ARE STUNNED!', '#fff6a0');
+  broadcastState();
 }
 
 function freezeMe() {
@@ -1785,7 +2343,10 @@ function onDamage(id, d) {
   const amount = Math.max(1, Math.min(HP_LIMIT, d.a | 0));
   r.hp = clampHp(d.hp);
   r.flash = HURT_FLASH;
-  if (!hiddenFromMe(r)) addDamageNumber(r.x, r.y, amount);
+  if (!hiddenFromMe(r)) {
+    addDamageNumber(r.x, r.y, amount);
+    sfx('hurt', r.x, r.y, 0.8);
+  }
 }
 
 async function startNet() {
@@ -1826,6 +2387,9 @@ async function startNet() {
       lastHitSent.set(target, performance.now());
       return hitAction.send(d, { target });
     };
+    const boomAction = room.makeAction('boom');
+    sendBoom = d => boomAction.send(d);
+    boomAction.onMessage = (d, ctx) => onBoom(ctx.peerId, d);
     const thornsAction = room.makeAction('thorns');
     sendThorns = target => thornsAction.send({ a: THORNS_DAMAGE }, { target });
     thornsAction.onMessage = (d, ctx) => onThorns(ctx.peerId);
@@ -1921,6 +2485,8 @@ function doMelee() {
   me.punchCd = it.cooldown || PUNCH_COOLDOWN;
   me.punchT = PUNCH_TIME;
   me.punchCount++;
+  const swing = swingSfx(weaponKey());
+  if (swing) sfx(swing);
   const reach = PLAYER_W / 2 + it.range;
   const hx = me.facing > 0 ? me.x + PLAYER_W / 2 : me.x + PLAYER_W / 2 - reach;
   const targets = [...remotes].filter(([, r]) => !r.dead && it.damage > 0 && rectsOverlap(hx, me.y, reach, PLAYER_H, r.x, r.y, PLAYER_W, PLAYER_H));
@@ -1937,13 +2503,96 @@ function doMelee() {
     if (!sendHit) break;
     try { sendHit(msg, id); } catch (e) { /* peer gone */ }
   }
+  let landed = targets.length > 0;
   for (const c of [...chests]) {
-    if (rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, chestW(c), chestH(c))) hitChest(c, msg);
+    if (!rectsOverlap(hx, me.y, reach, PLAYER_H, c.x, c.y, chestW(c), chestH(c))) continue;
+    hitChest(c, msg);
+    if (settings.mining) landed = true;
   }
+  if (!rock.broken && rectsOverlap(hx, me.y, reach, PLAYER_H, rock.x, rock.y, rock.w, rock.h)) {
+    hitRock(msg);
+    if (settings.mining) landed = true;
+  }
+  const thud = punchSfx(weaponKey());
+  if (landed && thud) sfx(thud);
   hitClovers(hx, me.y, reach, msg);
   if (shardHitsBox(hx, me.y, reach, PLAYER_H)) hitShard(msg);
   broadcastState();
 }
+
+// The rock only cares about hits of ROCK_MIN_DAMAGE or more, and never grows back
+// until the page reloads.
+function hitRock(msg) {
+  if (rock.broken) return;
+  const dmg = itemDamage(attackItem(msg && msg.w) || FIST_ITEM, msg, true);
+  const mx = rock.x + rock.w / 2, my = rock.y + rock.h / 2;
+  if (dmg < ROCK_MIN_DAMAGE) {
+    emit(mx, my, 6, '#e8eef8', 70, 0.25);
+    damageNumbers.push({ x: mx, y: rock.y - 12, text: '0', life: 0.8 });
+    showToast('THE ROCK NEEDS A HIT THAT DOES 32 OR MORE DAMAGE', '#c8c0b0');
+    return;
+  }
+  rock.hp = Math.max(0, rock.hp - dmg);
+  rock.flash = performance.now();
+  damageNumbers.push({ x: mx, y: rock.y - 12, text: '-' + dmg, life: 0.8 });
+  emit(mx, my, 8, Math.random() < 0.5 ? '#8a8494' : '#5a5664', 80, 0.4);
+  if (settings.mining) sfx('chestStone');
+  if (rock.hp <= 0) breakRock();
+}
+
+function breakRock() {
+  rock.broken = true;
+  const i = solids.indexOf(rock);
+  if (i >= 0) solids.splice(i, 1);
+  sfx('rockBreak');
+  for (let k = 0; k < 60; k++) {
+    const a = -Math.random() * Math.PI, sp = 60 + Math.random() * 160;
+    particles.push({ x: rock.x + Math.random() * rock.w, y: rock.y + Math.random() * rock.h, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.6 + Math.random() * 0.6, max: 1.2,
+      color: ['#8a8494', '#6a6674', '#4a4652', '#a8a2b0'][Math.floor(Math.random() * 4)], g: 500 });
+  }
+  if (flashesOn()) skyFlash = Math.max(skyFlash, 0.15);
+  if (!lowDetail()) shakeUntil = performance.now() + 350;
+  showToast('THE ROCK BROKE! JUMP INTO THE HOLE', '#c8c0b0');
+}
+
+function enterUnderground() {
+  me.x = UG_SHAFT.x + UG_SHAFT.w / 2 - PLAYER_W / 2;
+  me.y = UG_TOP + 2;
+  me.vx = 0;
+  me.vy = Math.max(me.vy, 120);
+  me.jetting = me.launching = false;
+  me.dashT = 0;
+  cam.x = me.x - VIEW_W / 2;
+  cam.y = me.y - 20;
+  clampCamera();
+  sfx('enterUnderground');
+  showToast('YOU ENTERED THE UNDERGROUND', '#c8c0b0');
+  broadcastState();
+}
+
+const onRope = p => inUnder(p.y) && Math.abs(p.x + PLAYER_W / 2 - ROPE.x) <= ROPE_REACH && p.y < ROPE.y2 && p.y + PLAYER_H > ROPE.y1;
+
+// Out of the shaft and onto the ground beside the hole.
+function climbOut() {
+  me.x = HOLE.x + HOLE.w + 6;
+  me.y = GROUND_Y - PLAYER_H;
+  me.vx = me.vy = 0;
+  me.climbing = false;
+  cam.x = me.x - VIEW_W / 2;
+  cam.y = me.y - VIEW_H / 2;
+  clampCamera();
+  sfx('enterUnderground');
+  showToast('YOU CLIMBED OUT OF THE UNDERGROUND', '#c8c0b0');
+  broadcastState();
+}
+
+function lavaDeath() {
+  sfx('burn');
+  emit(me.x + PLAYER_W / 2, LAVA_Y, 20, '#ff8a2a', 90, 0.6);
+  takeDamage(me.hp, 'THE LAVA');
+}
+
+const hasTorch = () => !!(equipped[activeHand] && ITEMS[equipped[activeHand].key].light);
 
 // Arrows are simulated by the shooter, who reports hits; everyone else only
 // draws a copy of them.
@@ -1973,8 +2622,12 @@ function fireArrow(charged, aimAtMouse) {
   const a = {
     x: sx, y: sy, vx: dx * speed, vy: dy * speed, life: ARROW_LIFE,
     mine: true, owner: myPeerId, w: heldKey(), ch: charged ? 1 : 0, fz: freezeBoosted() ? 1 : 0,
+    rn: it.kind === 'staff' && inThunderBiome() ? 1 : 0,
   };
   arrows.push(a);
+  if (it.kind === 'bow') sfx(charged ? 'arrowCharged' : 'arrow');
+  if (it.kind === 'staff') sfx('fireball');
+  if (it.kind === 'shuriken') sfx('shuriken');
   if (charged) emit(sx, sy, 10, '#ffd84a', 60, 0.3);
   if (sendArrow) {
     try {
@@ -1984,10 +2637,103 @@ function fireArrow(charged, aimAtMouse) {
   broadcastState();
 }
 
+// Big upward launches pass through platforms on the way up and land on top of whatever they end in.
+function launchUp(jumps) {
+  me.vy = -AIR_JUMP_V * Math.sqrt(jumps);
+  me.launching = true;
+  me.jetting = false;
+  me.dashT = 0;
+  broadcastState();
+}
+
+// Bubble Burst Power: hold jump for two seconds to ride a bubble column up.
+function updateBubbleBurst(dt) {
+  const ready = powerKey() === 'bubble_burst' && performance.now() >= me.bubbleCdUntil && performance.now() >= me.stunUntil;
+  if (!ready || !held(JUMP_KEYS)) {
+    me.bubbleHold = 0;
+    return;
+  }
+  me.bubbleHold += dt;
+  if (Math.random() < 0.15 + me.bubbleHold * 0.3) {
+    particles.push({ x: me.x + Math.random() * PLAYER_W, y: me.y + PLAYER_H, vx: (Math.random() - 0.5) * 12, vy: -15 - Math.random() * 20, life: 0.5, max: 0.5, color: Math.random() < 0.5 ? '#7ae0ff' : '#e8f8ff', g: 0 });
+  }
+  if (me.bubbleHold < BUBBLE_HOLD) return;
+  me.bubbleHold = 0;
+  me.bubbleCdUntil = performance.now() + BUBBLE_COOLDOWN * 1000;
+  launchUp(BUBBLE_JUMPS);
+  sfx('bubbleBurst');
+  bubbleColumn(me.x + PLAYER_W / 2, me.y + PLAYER_H);
+}
+
+function bubbleColumn(x, y) {
+  for (let i = 0; i < (lowDetail() ? 20 : 50); i++) {
+    particles.push({ x: x + (Math.random() - 0.5) * 16, y: y + Math.random() * 30, vx: (Math.random() - 0.5) * 20, vy: -150 - Math.random() * 350,
+      life: 0.5 + Math.random() * 0.5, max: 1, color: ['#7ae0ff', '#bff4ff', '#ffffff', '#3ab8f0'][Math.floor(Math.random() * 4)], g: 0 });
+  }
+}
+
+function throwTrident(aimAtMouse) {
+  const { sx, sy, dx, dy } = aimDir(aimAtMouse);
+  me.tridentOut = true;
+  me.punchT = PUNCH_TIME;
+  me.punchCount++;
+  const a = { x: sx, y: sy, vx: dx * TRIDENT_SPEED, vy: dy * TRIDENT_SPEED, life: TRIDENT_OUT, mine: true, owner: myPeerId, w: 'trident', ch: 0 };
+  arrows.push(a);
+  sfx('katana');
+  if (sendArrow) {
+    try { sendArrow({ x: Math.round(sx), y: Math.round(sy), vx: Math.round(a.vx), vy: Math.round(a.vy), w: a.w, ch: 0 }); } catch (e) { /* ignore */ }
+  }
+  broadcastState();
+}
+
+function castLightning(aimAtMouse) {
+  const it = heldItem();
+  me.punchCd = it.cooldown;
+  me.punchT = PUNCH_TIME;
+  me.punchCount++;
+  const px = aimAtMouse ? mouse.x + cam.x : me.x + PLAYER_W / 2 + me.facing * 80;
+  const py = aimAtMouse ? mouse.y + cam.y : me.y + PLAYER_H;
+  const rect = stormRectAt(px, py, STAFF_STRIKE_W);
+  if (!rect) return;
+  startStormRect(rect, myPeerId);
+  sfx('chestThunder');
+  emit(me.x + PLAYER_W / 2, me.y - 6, 8, '#c8a8ff', 50, 0.3);
+  if (sendStorm) {
+    try { sendStorm({ ls: rect }); } catch (e) { /* ignore */ }
+  }
+}
+
 function onRemoteArrow(id, d) {
   if (!d || ![d.x, d.y, d.vx, d.vy].every(Number.isFinite) || !ITEMS[d.w]) return;
-  if (Math.hypot(d.vx, d.vy) > (ITEMS[d.w].speed || ARROW_SPEED) * 1.5 || arrows.length > 200) return;
-  arrows.push({ x: d.x, y: d.y, vx: d.vx, vy: d.vy, life: ARROW_LIFE, mine: false, owner: id, w: d.w, ch: d.ch ? 1 : 0 });
+  const thrown = d.w === 'trident';
+  if (Math.hypot(d.vx, d.vy) > (thrown ? TRIDENT_SPEED : ITEMS[d.w].speed || ARROW_SPEED) * 1.5 || arrows.length > 200) return;
+  arrows.push({ x: d.x, y: d.y, vx: d.vx, vy: d.vy, life: thrown ? TRIDENT_OUT : ARROW_LIFE, mine: false, owner: id, w: d.w, ch: d.ch ? 1 : 0 });
+  const r = remotes.get(id);
+  if (r && hiddenFromMe(r)) return;
+  const kind = ITEMS[d.w].kind;
+  if (kind === 'bow' || kind === 'staff') sfx(kind === 'staff' ? 'fireball' : d.ch ? 'arrowCharged' : 'arrow', d.x, d.y, 0.8);
+  else if (kind === 'shuriken') sfx('shuriken', d.x, d.y, 0.8);
+  else if (thrown) sfx('katana', d.x, d.y, 0.8);
+}
+
+// A thrown trident flies back to its owner's hand over TRIDENT_BACK seconds.
+function returnTrident(a, dt) {
+  const owner = a.owner === myPeerId ? me : remotes.get(a.owner);
+  a.back.t += dt;
+  const k = Math.min(1, a.back.t / TRIDENT_BACK), e = k * k * (3 - 2 * k);
+  if (owner) {
+    const tx = owner.x + PLAYER_W / 2, ty = owner.y + 6;
+    a.vx = tx - a.x || 1;
+    a.vy = ty - a.y;
+    a.x = a.back.x + (tx - a.back.x) * e;
+    a.y = a.back.y + (ty - a.back.y) * e;
+  }
+  if (k < 1 && owner) return false;
+  if (a.mine) {
+    me.tridentOut = false;
+    broadcastState();
+  }
+  return true;
 }
 
 function arrowHitsPlayer(a, x, y) {
@@ -1997,13 +2743,19 @@ function arrowHitsPlayer(a, x, y) {
 function updateArrows(dt) {
   for (let i = arrows.length - 1; i >= 0; i--) {
     const a = arrows[i];
+    if (a.back) {
+      if (returnTrident(a, dt)) arrows.splice(i, 1);
+      continue;
+    }
     a.life -= dt;
     let gone = a.life <= 0;
     const steps = Math.max(1, Math.ceil(Math.hypot(a.vx, a.vy) * dt / 3));
     for (let s = 0; s < steps && !gone; s++) {
       a.x += a.vx * dt / steps;
       a.y += a.vy * dt / steps;
-      if (a.x < 0 || a.x > WORLD_W || a.y < worldTop() - 20 || a.y > WORLD_H || overlaps(a.x, a.y, 1, 1)) {
+      const wall = outOfWorld(a.x, a.y, 20) || overlaps(a.x, a.y, 1, 1);
+      if (wall) {
+        if (wall === rock && a.mine) hitRock(a.w === 'trident' ? { w: a.w, th: 1 } : { w: a.w, ch: a.ch, rn: a.rn });
         if (ITEMS[a.w].kind !== 'staff') emit(a.x, a.y, 4, '#c8b89a', 30, 0.25);
         gone = true;
         break;
@@ -2011,7 +2763,11 @@ function updateArrows(dt) {
       for (const [id, r] of remotes) {
         if (r.dead || id === a.owner || !arrowHitsPlayer(a, r.x, r.y)) continue;
         if (a.mine && sendHit) {
-          try { sendHit(a.fz ? { w: a.w, ch: a.ch, fz: 1 } : { w: a.w, ch: a.ch }, id); } catch (e) { /* peer gone */ }
+          const msg = { w: a.w, ch: a.ch };
+          if (a.fz) msg.fz = 1;
+          if (a.rn) msg.rn = 1;
+          if (a.w === 'trident') msg.th = 1;
+          try { sendHit(msg, id); } catch (e) { /* peer gone */ }
         }
         gone = true;
         break;
@@ -2020,16 +2776,21 @@ function updateArrows(dt) {
       if (!gone && a.mine) {
         const c = chests.find(o => a.x >= o.x && a.x < o.x + chestW(o) && a.y >= o.y && a.y < o.y + chestH(o));
         if (c) {
-          hitChest(c, { w: a.w, ch: a.ch });
+          const msg = { w: a.w, ch: a.ch };
+          if (a.rn) msg.rn = 1;
+          if (a.w === 'trident') msg.th = 1;
+          hitChest(c, msg);
           gone = true;
         }
       }
       if (!gone && shardHitsBox(a.x, a.y, 1, 1)) {
-        if (a.mine) hitShard({ w: a.w, ch: a.ch, ar: 1 });
+        if (a.mine) hitShard(a.w === 'trident' ? { w: a.w, th: 1, ar: 1 } : { w: a.w, ch: a.ch, ar: 1 });
         gone = true;
       }
     }
-    if (gone) {
+    if (gone && a.w === 'trident') {
+      a.back = { x: a.x, y: a.y, t: 0 };
+    } else if (gone) {
       if (ITEMS[a.w].kind === 'staff') emit(a.x, a.y, 10, Math.random() < 0.5 ? '#ffb040' : '#ff6a1a', 60, 0.4);
       arrows.splice(i, 1);
     } else if (ITEMS[a.w].kind === 'staff') {
@@ -2061,10 +2822,30 @@ function drawFireball(x, y, vx, vy, k) {
   ctx.fillRect(x, y, k, k);
 }
 
+// Prongs point along the flight on the way out, and away from the owner on the way home.
+function drawThrownTrident(a, cx, cy) {
+  const sp = Math.hypot(a.vx, a.vy) || 1, ux = a.vx / sp, uy = a.vy / sp;
+  const dir = a.back ? -1 : 1, hx = ux * dir, hy = uy * dir;
+  const col = ITEMS.trident.color, shaft = shade(col, -0.35);
+  const px = (x, y, c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(x - cx), Math.round(y - cy), 1, 1); };
+  for (let t = -6; t <= 6; t++) px(a.x - hx * t, a.y - hy * t, shaft);
+  const tipX = a.x + hx * 7, tipY = a.y + hy * 7;
+  for (const side of [-2, 0, 2]) {
+    for (let t = 0; t < 3; t++) px(tipX + hx * t - hy * side, tipY + hy * t + hx * side, side ? col : '#e8f8ff');
+  }
+  for (let s = -2; s <= 2; s++) px(tipX - hy * s, tipY + hx * s, col);
+}
+
 function drawArrows(cx, cy) {
   for (const a of arrows) {
     if (ITEMS[a.w].kind === 'staff') {
+      ctx.globalAlpha = rainyAt(a.y) ? RAIN_FIRE_ALPHA : 1;
       drawFireball(Math.round(a.x - cx), Math.round(a.y - cy), a.vx, a.vy, 1);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+    if (a.w === 'trident') {
+      drawThrownTrident(a, cx, cy);
       continue;
     }
     if (ITEMS[a.w].kind === 'shuriken') {
@@ -2073,7 +2854,7 @@ function drawArrows(cx, cy) {
       const pts = diag ? [[-1, -1], [1, -1], [-1, 1], [1, 1], [-2, -2], [2, -2], [-2, 2], [2, 2]] : [[0, -1], [0, 1], [-1, 0], [1, 0], [0, -2], [0, 2], [-2, 0], [2, 0]];
       ctx.fillStyle = '#140c1c';
       ctx.fillRect(x - 1, y - 1, 3, 3);
-      ctx.fillStyle = ITEMS.shuriken.color;
+      ctx.fillStyle = ITEMS[a.w].color;
       for (const [px, py] of pts) ctx.fillRect(x + px, y + py, 1, 1);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(x, y, 1, 1);
@@ -2095,6 +2876,7 @@ function tryDash(dir) {
   me.dashDir = dir < 0 ? -1 : 1;
   me.dashCd = DASH_COOLDOWN;
   me.lock = 0;
+  sfx('dash');
   emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 8, '#ffffff', 60, 0.3);
 }
 
@@ -2131,6 +2913,7 @@ function updateShuriken(dt) {
     me.burst = SHURIKEN_BURST_COUNT;
     me.ammo = 0;
     me.burstT = 0;
+    sfx('shurikenBurst');
   }
   burstQueued = false;
 }
@@ -2148,7 +2931,7 @@ function castBeam(sx, sy, dx, dy) {
   for (let d = 0; d < LASER_RANGE; d += 2) {
     x = sx + dx * d;
     y = sy + dy * d;
-    if (x < 0 || x > WORLD_W || y < worldTop() || y > WORLD_H || overlaps(x, y, 1, 1)) return { x2: x, y2: y };
+    if (outOfWorld(x, y, 0) || overlaps(x, y, 1, 1)) return { x2: x, y2: y };
     for (const [id, r] of remotes) {
       if (!r.dead && arrowHitsPlayer({ x, y }, r.x, r.y)) return { x2: x, y2: y, peer: id };
     }
@@ -2182,14 +2965,15 @@ function updateLaser(dt) {
   me.fuel = Math.max(0, me.fuel - dt);
   me.laserTick -= dt;
   if (me.laserTick <= 0) {
-    me.laserTick += it.tick || LASER_TICK;
+    // Rain doesn't shrink each flame tick (whole-number damage); the ticks come slower instead.
+    me.laserTick += (it.tick || LASER_TICK) / (it.flame && inThunderBiome() ? RAIN_FIRE_MULT : 1);
     const msg = attackMsg();
     if (hit.peer && sendHit) {
       try { sendHit(msg, hit.peer); } catch (e) { /* peer gone */ }
     } else if (hit.chest) {
       hitChest(hit.chest, msg);
     }
-    if (Math.random() < 0.8) emit(hit.x2, hit.y2, it.flame ? 4 : 2, it.flame ? '#ffb040' : '#ff6a6a', 40, 0.2);
+    if (Math.random() < 0.8) emit(hit.x2, hit.y2, it.flame || it.bubble ? 4 : 2, it.flame ? '#ffb040' : it.bubble ? '#bff4ff' : '#ff6a6a', 40, 0.2);
   }
   if (me.fuel <= 0) {
     me.laserOut = LASER_EMPTY_COOLDOWN;
@@ -2198,11 +2982,29 @@ function updateLaser(dt) {
   }
 }
 
-function drawBeam(x1, y1, x2, y2, cx, cy, flame) {
+function drawBeam(x1, y1, x2, y2, cx, cy, it) {
   const len = Math.hypot(x2 - x1, y2 - y1);
   const ux = (x2 - x1) / (len || 1), uy = (y2 - y1) / (len || 1);
-  if (flame) {
+  if (it && it.bubble) {
+    // A stream of bubbles of a few sizes, wobbling as they race forward.
+    const shift = (time * 260) % 9;
+    for (let d = shift, k = 0; d <= len; d += 9, k++) {
+      const seed = Math.floor((time * 260 - d) / 9);
+      const r = 1 + Math.floor(hash01(seed) * 3), wob = Math.sin(time * 20 + seed) * 2;
+      const bx = Math.round(x1 + ux * d - uy * wob - cx), by = Math.round(y1 + uy * d + ux * wob - cy);
+      ctx.fillStyle = '#7ae0ff';
+      ctx.fillRect(bx - r, by - r, r * 2 + 1, 1);
+      ctx.fillRect(bx - r, by + r, r * 2 + 1, 1);
+      ctx.fillRect(bx - r, by - r, 1, r * 2 + 1);
+      ctx.fillRect(bx + r, by - r, 1, r * 2 + 1);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(bx - r + 1, by - r + 1, 1, 1);
+    }
+    return;
+  }
+  if (it && it.flame) {
     // A stream of fire that widens and flickers toward the end.
+    ctx.globalAlpha = rainyAt(y1) ? RAIN_FIRE_ALPHA : 1;
     for (let d = 0; d <= len; d += 2) {
       const spread = 1 + Math.floor(d / 40);
       const x = Math.round(x1 + ux * d - cx + (Math.random() - 0.5) * spread), y = Math.round(y1 + uy * d - cy + (Math.random() - 0.5) * spread);
@@ -2210,6 +3012,7 @@ function drawBeam(x1, y1, x2, y2, cx, cy, flame) {
       ctx.fillStyle = r < 0.2 ? '#fff2b0' : r < 0.55 ? '#ffb040' : r < 0.85 ? '#ff6a1a' : '#c8281c';
       ctx.fillRect(x - Math.floor(spread / 2), y - Math.floor(spread / 2), spread + 1, spread + 1);
     }
+    ctx.globalAlpha = 1;
     return;
   }
   const wobble = Math.floor(time * 30) % 2;
@@ -2230,6 +3033,71 @@ function usePower(source) {
   if (key === 'dash') tryDash(moveDir() || me.facing);
   else if (key === 'radar_blocker') activateRadar();
   else if (key === 'jetpack' && source === 'middle') jetQueued = true;
+  else if (key === 'explosion_power' && (source === 'middle' || source === 'shift')) explode();
+}
+
+// Explosion Power: hurts every player and chest nearby (not you), then a long cooldown.
+let sendBoom = null;
+function explode() {
+  const now = performance.now();
+  if (now < me.blastCdUntil) return;
+  me.blastCdUntil = now + BLAST_COOLDOWN * 1000;
+  const x = me.x + PLAYER_W / 2, y = me.y + PLAYER_H / 2, msg = { w: 'explosion_power' };
+  for (const [id, r] of remotes) {
+    if (r.dead || Math.hypot(r.x + PLAYER_W / 2 - x, r.y + PLAYER_H / 2 - y) > BLAST_RADIUS || !sendHit) continue;
+    try { sendHit(msg, id); } catch (e) { /* peer gone */ }
+  }
+  for (const c of [...chests]) {
+    if (Math.hypot(c.x + chestW(c) / 2 - x, c.y + chestH(c) / 2 - y) > BLAST_RADIUS) continue;
+    if (canHurtChest(chestKind(c), msg)) hitChest(c, msg);
+  }
+  const rx = Math.max(rock.x, Math.min(rock.x + rock.w, x)), ry = Math.max(rock.y, Math.min(rock.y + rock.h, y));
+  if (!rock.broken && Math.hypot(rx - x, ry - y) <= BLAST_RADIUS) hitRock(msg);
+  blastFx(x, y);
+  if (sendBoom) {
+    try { sendBoom({ x: Math.round(x), y: Math.round(y) }); } catch (e) { /* ignore */ }
+  }
+}
+
+function onBoom(id, d) {
+  const r = remotes.get(id), now = performance.now();
+  if (!r || !d || !Number.isFinite(d.x) || !Number.isFinite(d.y) || now - (r.lastBoom || -1e9) < BLAST_COOLDOWN * 900) return;
+  r.lastBoom = now;
+  if (!hiddenFromMe(r)) blastFx(d.x, d.y);
+}
+
+let shakeUntil = 0;
+function blastFx(x, y) {
+  sfx('explosion', x, y);
+  const near = Math.hypot(x - (cam.x + VIEW_W / 2), y - (cam.y + VIEW_H / 2)) < VIEW_W;
+  if (near && flashesOn()) skyFlash = Math.max(skyFlash, 0.25);
+  if (near && !lowDetail()) shakeUntil = performance.now() + 400;
+  const cols = ['#fff2b0', '#ffb040', '#ff6a1a', '#c8281c', '#5a4a4a'];
+  const n = lowDetail() ? 30 : 70;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 220;
+    particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30, life: 0.4 + Math.random() * 0.5, max: 0.9, color: cols[Math.floor(Math.random() * cols.length)], g: 0 });
+  }
+  blasts.push({ x, y, at: performance.now() });
+}
+const blasts = [];
+function drawBlasts(cx, cy) {
+  const now = performance.now();
+  for (let i = blasts.length - 1; i >= 0; i--) {
+    const b = blasts[i], t = (now - b.at) / 1000;
+    if (t > 0.35) { blasts.splice(i, 1); continue; }
+    const k = t / 0.35, rad = BLAST_RADIUS * (0.3 + 0.7 * k);
+    ctx.globalAlpha = 1 - k;
+    ctx.fillStyle = '#ffb040';
+    for (let a = 0; a < 48; a++) {
+      const ang = a / 48 * Math.PI * 2;
+      ctx.fillRect(Math.round(b.x - cx + Math.cos(ang) * rad), Math.round(b.y - cy + Math.sin(ang) * rad), 2, 2);
+    }
+    ctx.fillStyle = '#fff2b0';
+    const core = Math.round(16 * (1 - k));
+    ctx.fillRect(Math.round(b.x - cx - core / 2), Math.round(b.y - cy - core / 2), core, core);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function activateRadar() {
@@ -2237,6 +3105,7 @@ function activateRadar() {
   if (now < me.radarCdUntil) return;
   me.radarUntil = now + RADAR_TIME * 1000;
   me.radarCdUntil = me.radarUntil + RADAR_COOLDOWN * 1000;
+  sfx('radarOn');
   emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 12, '#7a8ad8', 60, 0.5);
   showToast('RADAR BLOCKER ON: HIDDEN FOR 30S', rarityOf(ITEMS.radar_blocker).text);
   broadcastState();
@@ -2257,6 +3126,14 @@ const RARITY = {
   epic: { label: 'EPIC', bg: '#55287e', text: '#c47cff' },
   legendary: { label: 'LEGENDARY', bg: '#7a5214', text: '#ffc83a' },
   mythic: { label: 'MYTHIC', bg: '#7a1e3c', text: '#ff6a8a' },
+  // Text fades black -> white -> black.
+  secret: {
+    label: 'SECRET', bg: '#5a5a66',
+    get text() {
+      const v = Math.round((1 - Math.cos(time * 2.5)) / 2 * 255).toString(16).padStart(2, '0');
+      return '#' + v + v + v;
+    },
+  },
 };
 const rarityOf = it => RARITY[it.rarity] || RARITY.common;
 const ITEMS = {
@@ -2315,6 +3192,19 @@ const ITEMS = {
   snow_bucket: { name: 'SNOW BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#f4f8ff', rarity: 'common', desc: 'MAYBE SOMETHING CAN MELT IT' },
   water_bucket: { name: 'WATER BUCKET', kind: 'material', icon: 'bucket', color: '#9aa0b0', fill: '#4aa8ff', rarity: 'common', desc: 'DUMP IT AT THE CRAFTING BENCH' },
   luck_potion: { name: 'LUCK POTION', kind: 'consumable', icon: 'potion', color: '#4ae86a', rarity: 'rare' },
+  aqua_dagger: { name: 'AQUA DAGGER', kind: 'melee', style: 'dagger', damage: 18, range: PUNCH_RANGE, cooldown: 0.7, color: '#4ac8f0', rarity: 'epic' },
+  bubble_launcher: { name: 'BUBBLE LAUNCHER', kind: 'laser', icon: 'bubbler', bubble: true, knockback: true, damage: 2, tick: 0.2, fuel: MAX_FUEL, refuel: 2, color: '#5ad8ff', rarity: 'legendary' },
+  aqua_sword: { name: 'AQUA SWORD', kind: 'melee', style: 'sword', damage: 20, range: SWORD_RANGE, color: '#3ab8f0', rarity: 'legendary' },
+  bubble_burst: { name: 'BUBBLE BURST POWER', kind: 'power', icon: 'bubbles', color: '#7ae0ff', rarity: 'legendary' },
+  aqua_shuriken: { name: 'AQUA SHURIKENS', kind: 'shuriken', damage: 12, color: '#4ac8f0', rarity: 'legendary' },
+  aqua_katana: { name: 'AQUA KATANA', kind: 'melee', style: 'katana', damage: 20, range: KATANA_RANGE, color: '#3ab8f0', rarity: 'legendary' },
+  lightning_staff: { name: 'LIGHTNING STAFF', kind: 'staff', icon: 'lstaff', strike: true, damage: LIGHTNING_DAMAGE, cooldown: 5, color: '#b48aff', rarity: 'legendary' },
+  trident: { name: 'TRIDENT', kind: 'melee', style: 'trident', damage: 15, throwDamage: 12, range: KATANA_RANGE, color: '#4ac8f0', rarity: 'mythic' },
+  aqua_gauntlet: { name: 'AQUA GAUNTLET', kind: 'melee', style: 'gauntlet', damage: 15, range: PUNCH_RANGE, cooldown: 0.1, color: '#4ac8f0', rarity: 'mythic' },
+  explosion_power: { name: 'EXPLOSION POWER', kind: 'power', icon: 'explosion', blast: true, damage: BLAST_DAMAGE, color: '#ff7a2a', rarity: 'mythic' },
+  thor_hammer: { name: 'THORS HAMMER', kind: 'melee', style: 'hammer', damage: 35, range: KATANA_RANGE, cooldown: 1, stun: 0.3, color: '#9ab0e8', rarity: 'secret' },
+  // Crafted only. Equipped in either hand, it lights up the dark underground.
+  torch: { name: 'TORCH', kind: 'melee', style: 'torch', damage: PUNCH_DAMAGE, range: PUNCH_RANGE, light: true, color: '#ffb040', rarity: 'rare' },
 };
 const BUCKET_KEYS = ['bucket', 'snow_bucket', 'water_bucket'];
 const SNOW_FILL_TIME = 10, MELT_TIME = 30, MELT_TIME_LAVA = 10;
@@ -2336,6 +3226,10 @@ const DROP_TABLES = {
     heavy_chestplate: 2, diamond_sword: 4, laser_gun: 6, magma_helmet: 8, iron_pickaxe: 10, magma_sword: 15, magma_boots: 18,
     magma_leggings: 22, fireball_staff: 25, magma_chestplate: 28, magma_katana: 30, flamethrower: 40, magma_gauntlet: 50,
   },
+};
+DROP_TABLES.thunder = {
+  aqua_dagger: 2, bubble_launcher: 4, aqua_sword: 7, bubble_burst: 10, aqua_shuriken: 15, aqua_katana: 18,
+  lightning_staff: 23, trident: 27, aqua_gauntlet: 32, explosion_power: 38, thor_hammer: 50,
 };
 // Ice chests borrow the stone table until they get their own.
 DROP_TABLES.ice = DROP_TABLES.stone;
@@ -2376,10 +3270,12 @@ const powerKey = () => (equipped.power ? equipped.power.key : '');
 const attackItem = w => {
   if (w === 'punch' || w === undefined) return FIST_ITEM;
   const it = ITEMS[w];
-  return it && HAND_KINDS.includes(it.kind) ? it : null;
+  return it && (HAND_KINDS.includes(it.kind) || it.blast) ? it : null;
 };
 const itemDamage = (it, msg, forChest) => {
   if (forChest && it.chestDamage) return it.chestDamage;
+  if (it.throwDamage && msg && msg.th) return it.throwDamage;
+  if (it.kind === 'staff' && msg && msg.rn) return Math.round(it.damage * RAIN_FIRE_MULT);
   return it.kind === 'bow' && msg && msg.ch ? it.charged : it.damage;
 };
 const hasDash = () => powerKey() === 'dash';
@@ -2419,6 +3315,7 @@ function toggleEquip(item) {
       slot = !equipped[activeHand] ? activeHand : !equipped[other] ? other : activeHand;
     }
     equipped[slot] = item;
+    sfx(ARMOR_KINDS[it.kind] ? 'equipArmor' : 'equip');
   }
   if (slot === activeHand) cancelWeaponActions();
   if (slot === 'power') me.jetting = false;
@@ -2449,6 +3346,7 @@ function deleteMarkedItems() {
     for (const slot of EQUIP_SLOTS) if (equipped[slot] === item) toggleEquip(item);
   }
   for (let i = inventory.length - 1; i >= 0; i--) if (inventory[i].marked) inventory.splice(i, 1);
+  sfx('delete');
   showToast('DELETED ' + doomed.length + (doomed.length === 1 ? ' ITEM' : ' ITEMS'), '#ff8a8a');
 }
 
@@ -2462,6 +3360,8 @@ const POWER_HELP = {
   jetpack: 'MIDDLE CLICK / HOLD JUMP',
   radar_blocker: 'Q / MIDDLE CLICK',
   freeze_power: 'STRONGER IN THE SNOW BIOME',
+  bubble_burst: 'HOLD JUMP 2S',
+  explosion_power: 'MIDDLE / SHIFT CLICK',
 };
 
 // adminBreak: from the admin's Break All Chests. A full inventory then drops its
@@ -2487,7 +3387,9 @@ function grantChestReward(kind = 'wood', adminBreak = false) {
     showToast('BROKE ALL CHESTS: GOT ' + adminLoot.n + (adminLoot.n === 1 ? ' ITEM' : ' ITEMS'), '#ffe66d');
     return;
   }
-  showToast('GOT ' + it.name + '!' + (POWER_HELP[key] ? ' ' + POWER_HELP[key] : ''), rarityOf(it).text);
+  if (it.rarity === 'legendary' || it.rarity === 'mythic' || it.rarity === 'secret') sfx(it.rarity);
+  const rar = rarityOf(it);
+  showToast('GOT ' + it.name + '!' + (POWER_HELP[key] ? ' ' + POWER_HELP[key] : ''), it.rarity === 'secret' ? () => rar.text : rar.text);
 }
 
 // Stackable items (like clovers) fill an existing stack before taking a new slot.
@@ -2515,6 +3417,7 @@ function useItem(item) {
     me.luckUntil = Math.max(performance.now(), me.luckUntil) + LUCK_TIME * 1000;
     showToast('LUCK POTION: ' + LUCK_MULT + 'X CHEST LUCK FOR 2 MIN', ITEMS.luck_potion.color);
     emit(me.x + PLAYER_W / 2, me.y + PLAYER_H / 2, 14, ITEMS.luck_potion.color, 60, 0.6);
+    sfx('potion');
   }
   removeItems(item.key, 1);
 }
@@ -2575,8 +3478,9 @@ const ADMIN_EVENTS = [
   { id: 'thunder', label: 'SUMMON THUNDER X1' },
   { id: 'tracker', label: 'THUNDER TRACKER' },
   { id: 'shard', label: 'SPAWN ICE SHARD' },
+  { id: 'rock', label: 'BREAK ROCK' },
 ];
-const eventBtnRect = i => ({ x: ADMIN_PANEL.x + 20, y: ADMIN_PANEL.y + 38 + i * 22, w: ADMIN_PANEL.w - 40, h: 19 });
+const eventBtnRect = i => ({ x: ADMIN_PANEL.x + 20, y: ADMIN_PANEL.y + 37 + i * 20, w: ADMIN_PANEL.w - 40, h: 18 });
 const TRACKER_DOUBLE_CLICK = 400;
 let adminIceCount = 0;
 let trackerRepeat = false, trackerNext = 0, lastTrackerClick = 0;
@@ -2602,7 +3506,7 @@ function toggleAdmin() {
   adminSearchFocus = false;
   adminPass = '';
   adminPassError = 0;
-  if (adminOpen) inventoryOpen = pickerOpen = craftOpen = storageOpen = false;
+  if (adminOpen) inventoryOpen = pickerOpen = craftOpen = storageOpen = settingsOpen = false;
 }
 
 function adminPasswordKey(e) {
@@ -2696,6 +3600,7 @@ function adminGive(key) {
     return;
   }
   addItem(key);
+  sfx('adminGive');
   showToast('ADDED ' + ITEMS[key].name, rarityOf(ITEMS[key]).text);
 }
 
@@ -2788,12 +3693,19 @@ function adminEvent(id) {
     const x = Math.round(Math.max(s.x, Math.min(s.x + s.w - SHARD_W, want)));
     adminToHost({ shard: [x, s.y - SHARD_H] });
     showToast('ICE SHARD SPAWNED', ITEMS.ice_shard.color);
+  } else if (id === 'rock') {
+    if (me.dead) return;
+    if (!rock.broken) {
+      rock.hp = 0;
+      breakRock();
+    }
+    enterUnderground();
   }
 }
 
 // Strikes the surface under (or nearest to) a point, capped so the ground doesn't light up end to end.
 const ADMIN_STORM_MAX_W = 120;
-function stormRectAt(px, feet) {
+function stormRectAt(px, feet, maxW = ADMIN_STORM_MAX_W) {
   let best = null, bestScore = Infinity;
   for (const s of solids) {
     if (s.t !== P && s.t !== 'ground') continue;
@@ -2803,7 +3715,7 @@ function stormRectAt(px, feet) {
     if (score < bestScore) { bestScore = score; best = s; }
   }
   if (!best) return null;
-  const w = Math.min(best.w, ADMIN_STORM_MAX_W);
+  const w = Math.min(best.w, maxW);
   const x = Math.max(best.x, Math.min(best.x + best.w - w, px - w / 2));
   return [Math.round(x), best.y, w];
 }
@@ -2917,6 +3829,7 @@ const STONE_PAL = { o: '#1e1e26', h: '#b4b4be', w: '#8a8a96', d: '#5c5c68', m: '
 const ARMOR_PAL = { o: '#1c0e12', h: '#c25a5e', w: '#8e2e34', d: '#5e1a20', m: '#c8ccd6', y: '#f2f4f8' };
 const ICE_PAL = { o: '#1a4a6a', h: '#f4ffff', w: '#b4ecfa', d: '#78c4e2', m: '#e2fbff', y: '#4ae8f0' };
 const MAGMA_PAL = { o: '#1a0a06', h: '#ff9a3d', w: '#c8381c', d: '#5a1a10', m: '#2a1a16', y: '#ffe08a' };
+const THUNDER_PAL = { o: '#140828', h: '#c8a8ff', w: '#8a5ad8', d: '#4a2a8a', m: '#2a1a4a', y: '#fff27a' };
 // Silver chests are tougher, and only hits stronger than a stone sword can damage them.
 const SILVER_CHEST_HP = 100;
 const SILVER_MIN_DAMAGE = ITEMS.stone_sword.damage + 1;
@@ -2929,6 +3842,8 @@ const CHEST_KINDS = {
   ice: { hp: 1000, pal: ICE_PAL, fx: ['#d8f6ff', '#4ae8f0'], needsItem: 'frozen_pickaxe', w: 20, h: 16 },
   armor: { hp: 100, pal: ARMOR_PAL, fx: ['#7a2a30', '#c8ccd6'], minDamage: 9 },
   magma: { hp: 350, pal: MAGMA_PAL, fx: ['#ff6a1a', '#ffe08a'], minDamage: 30 },
+  // flameOk: the flamethrower gets through even though its ticks are small.
+  thunder: { hp: 400, pal: THUNDER_PAL, fx: ['#b48aff', '#fff27a'], minDamage: 35, flameOk: true },
 };
 // The Armorer's Chest keeps one or two in every biome; the number is rerolled each time one breaks.
 const ARMOR_BIOMES = [[0, 1], [2], [3], [4], [BIOME_SECTION, BIOME_SECTION + 1]];
@@ -2959,12 +3874,15 @@ function canHurtChest(kind, msg) {
   if (rule.needsItems) return !!msg && rule.needsItems.includes(msg.w);
   if (!rule.minDamage) return true;
   const it = attackItem(msg && msg.w) || FIST_ITEM;
+  if (rule.flameOk && it.flame) return true;
   return (rule.silverOk && !!it.silverOk) || itemDamage(it, msg, true) >= rule.minDamage;
 }
 const CHEST_SURFACES = solids.filter(s => (s.t === P || s.t === 'ground') && s.w >= CHEST_W + 8);
+// Joins only now, so no chest or clover spot can land in the underground.
+solids.push(...ugSolids);
 const chestSection = c => sectionOf(c.y + chestH(c));
 // The purple biome has 11 fixed chest spots, split over its two sections.
-const BIOME_CHEST_MIX = { wood: 3, silver: 3, stone: 2 };
+const BIOME_CHEST_MIX = { stone: 2, silver: 2, thunder: 3 };
 const BIOME_CHEST_SPOTS = (() => {
   const rnd = mulberry32(778);
   const spots = [];
@@ -3001,6 +3919,7 @@ const isChestHost = () => chestHostId() === myPeerId;
 // Keeps random chests and clovers off the bench, the bucket and the storage chest.
 const reservedSpot = (x, y, w, h) =>
   rectsOverlap(x, y, w, h, BENCH.x - 10, BENCH.y - 10, BENCH.w + 20, BENCH.h + 10)
+  || rectsOverlap(x, y, w, h, rock.x - 10, rock.y, rock.w + 20, rock.h)
   || rectsOverlap(x, y, w, h, VAULT.x - 10, VAULT.y - 10, VAULT.w + 20, VAULT.h + 10)
   || rectsOverlap(x, y, w, h, BUCKET_SPOT.x - 8, BUCKET_SPOT.y - 4, BUCKET_W + 16, BUCKET_H + 4);
 
@@ -3194,6 +4113,7 @@ function updateBucket(dt) {
       me.snowFill = 0;
       held.key = 'snow_bucket';
       held.melt = 0;
+      sfx('snowFill');
       broadcastState();
     }
   } else {
@@ -3204,6 +4124,7 @@ function updateBucket(dt) {
     if (held.melt >= MELT_TIME) {
       held.key = 'water_bucket';
       delete held.melt;
+      sfx('melt');
       broadcastState();
     }
   }
@@ -3221,6 +4142,7 @@ function dumpWater() {
   }
   item.key = 'bucket';
   addItem('water');
+  sfx('splash');
   broadcastState();
   showToast('+1 WATER (' + itemCount('water') + ')', ITEMS.water.color);
 }
@@ -3384,6 +4306,7 @@ function hostHitShard(id, by, msg) {
   }
   shard = null;
   broadcastChests();
+  sfx('glass', s.x + SHARD_W / 2, s.y + SHARD_H / 2);
   if (by === myPeerId) gotShard(s);
   else if (sendClover) try { sendClover({ gotShard: s.id, x: s.x, y: s.y }, by); } catch (e) { /* ignore */ }
 }
@@ -3394,6 +4317,7 @@ function gotShard(s) {
     return;
   }
   addItem('ice_shard');
+  if (Number.isFinite(s.x) && Number.isFinite(s.y)) sfx('glass', s.x + SHARD_W / 2, s.y + SHARD_H / 2);
   showToast('GOT AN ICE SHARD! (' + itemCount('ice_shard') + ')', ITEMS.ice_shard.color);
   if (Number.isFinite(s.x) && Number.isFinite(s.y)) emit(s.x + SHARD_W / 2, s.y + SHARD_H / 2, 14, '#d8f6ff', 60, 0.5);
 }
@@ -3599,6 +4523,7 @@ function drawCraftPanel() {
     ctx.fillRect(ix + 1, iy + 1, 14, 14);
     drawItemIcon(ing, ix + 2, iy + 2);
     drawText(ctx, n + ' ' + ing.name, ix + 20, iy + 5, 1, '#e8e8e8');
+    if (r.keep && r.keep.includes(key)) drawText(ctx, 'KEPT', ix + 118, iy + 5, 1, '#8ad8ff');
     drawText(ctx, have + '/' + n, ix + 160, iy + 5, 1, ok ? '#6ad46a' : '#ff8a8a', 'right');
   });
   craftButton(CRAFT_BTN, 'CRAFT', canCraft(r));
@@ -3627,6 +4552,7 @@ function craftButton(b, label, ready) {
 
 function chestHitFx(c, amount) {
   c.flash = HURT_FLASH;
+  if (settings.mining) sfx(CHEST_HIT_SFX[chestKind(c)] || 'chestHit', c.x + chestW(c) / 2, c.y);
   addDamageNumber(c.x + chestW(c) / 2 - PLAYER_W / 2, c.y + 4, amount);
 }
 
@@ -3641,6 +4567,7 @@ function chestBlockedFx(c, msg) {
   else if (rule.needsItems) showToast('ONLY A HEAVY HAMMER OR MINERS GAUNTLET CAN BREAK IT', '#ff9a3d');
   else if (chargeHelps) showToast('MAYBE TRY HOLDING RIGHT CLICK');
   else if (kind === 'magma') showToast('NEED A HIT THAT DOES 30 OR MORE DAMAGE', '#ff9a3d');
+  else if (kind === 'thunder') showToast('NEED 35+ DAMAGE, A MINERS GAUNTLET OR A FLAMETHROWER', '#c8a8ff');
   else if (kind === 'stone') showToast('NEED A HIT THAT DOES MORE THAN 20 DAMAGE');
   else if (kind === 'armor') showToast('NEED A HIT THAT DOES 9 OR MORE DAMAGE');
   else showToast('NEED A WEAPON STRONGER THAN A STONE SWORD');
@@ -3751,18 +4678,21 @@ function openBiome(announce, durationMs = BIOME_DURATION * 1000) {
   biomeOpenedAt = performance.now();
   biomeCloseAt = biomeOpenedAt + durationMs;
   nextStormRoll = 0;
+  biomeFalling = false;
   solids.find(s => s.t === 'ceiling').y = BIOME_TOP - 16;
   solids.push(...biomeSolids);
   if (announce) {
     showToast('A LOUD THUNDER STRIKES FROM ABOVE', GRASS[BIOME_SECTION].top);
     skyFlash = 0.5;
+    if (state === 'game') sfx('thunder', undefined, undefined, 1.2);
   }
 }
 
 function closeBiome() {
   if (!biomeOpen) return;
   biomeOpen = false;
-  solids.find(s => s.t === 'ceiling').y = -16;
+  biomeFalling = state === 'game' && !me.dead && me.y < 0;
+  if (!biomeFalling) solids.find(s => s.t === 'ceiling').y = -16;
   for (const s of biomeSolids) {
     const i = solids.indexOf(s);
     if (i >= 0) solids.splice(i, 1);
@@ -3770,18 +4700,6 @@ function closeBiome() {
   chests = chests.filter(c => chestSection(c) < BIOME_SECTION);
   storms = [];
   chestsDirty = true;
-  // Anyone still up there drops onto a platform at the top of the red area.
-  if (state === 'game' && !me.dead && me.y < 40) {
-    const spots = solids.filter(s => s.t === P && s.y > 60 && s.y < 300 && s.w >= 40 &&
-      !overlaps(s.x + s.w / 2 - PLAYER_W / 2, s.y - PLAYER_H - 1, PLAYER_W, PLAYER_H));
-    const s = spots[Math.floor(Math.random() * spots.length)];
-    me.x = s.x + s.w / 2 - PLAYER_W / 2;
-    me.y = s.y - PLAYER_H - 1;
-    me.vx = me.vy = 0;
-    me.jetting = false;
-    me.dashT = 0;
-    broadcastState();
-  }
   showToast('THE THUNDER BIOME FADED AWAY', GRASS[BIOME_SECTION].top);
 }
 
@@ -3800,7 +4718,8 @@ function tickBiomeEvents(now) {
     nextStormRoll = now + STORM_ROLL_INTERVAL * 1000;
     const hit = [];
     BIOME_PLATS.forEach((s, i) => {
-      if (Math.random() < STORM_CHANCE) hit.push(i);
+      const charged = chests.some(c => chestKind(c) === 'thunder' && c.y + chestH(c) === s.y && c.x >= s.x && c.x < s.x + s.w);
+      if (Math.random() < (charged ? THUNDER_CHEST_STORM_CHANCE : STORM_CHANCE)) hit.push(i);
     });
     if (hit.length) {
       hit.forEach(startStorm);
@@ -3813,6 +4732,15 @@ function tickBiomeEvents(now) {
 
 function onStorm(id, d) {
   if (!d) return;
+  // Lightning staff: one strike per cooldown from someone holding the staff.
+  if (Array.isArray(d.ls)) {
+    const r = remotes.get(id), now = performance.now();
+    if (!r || r.dead || r.w !== 'lightning_staff' || now - (r.lastStaff || -1e9) < (ITEMS.lightning_staff.cooldown - 1) * 1000) return;
+    if (d.ls.length !== 3 || !d.ls.every(Number.isFinite)) return;
+    r.lastStaff = now;
+    startStormRect([d.ls[0], d.ls[1], Math.min(STAFF_STRIKE_W, d.ls[2])], id);
+    return;
+  }
   // Admin lightning can land on any surface, so it carries the rectangle itself.
   if (Array.isArray(d.r)) {
     const r = remotes.get(id);
@@ -3848,14 +4776,18 @@ function tickStorms() {
     if (s.struck || now - s.at < STORM_DELAY * 1000) continue;
     s.struck = true;
     const z = stormZone(s);
-    s.bolt = [];
-    for (let y = z.y + 8; y < s.plat.y; y += 8) s.bolt.push([z.x + z.w / 2 + Math.round((Math.random() - 0.5) * Math.min(24, z.w * 0.4)), y]);
-    s.bolt.push([z.x + z.w / 2, s.plat.y]);
-    emit(z.x + z.w / 2, s.plat.y, 24, '#fff6a0', 140, 0.5);
-    emit(z.x + z.w / 2, s.plat.y, 10, '#8ad8ff', 90, 0.4);
+    if (!s.bolt) s.bolt = makeStormBolt(s);
+    const [ix, iy] = s.bolt.main[s.bolt.main.length - 1];
+    emit(ix, iy, 24, '#ffffff', 140, 0.5);
+    emit(ix, iy, 14, '#b8c8ff', 90, 0.45);
+    emit(ix, iy, 8, '#8a6aff', 60, 0.6);
     const onScreen = Math.abs(z.x + z.w / 2 - (cam.x + VIEW_W / 2)) < VIEW_W / 2 + 40 && Math.abs(s.plat.y - (cam.y + VIEW_H / 2)) < VIEW_H / 2 + 80;
     if (state === 'game' && (me.y < 60 || (s.by && onScreen))) {
       skyFlash = Math.max(skyFlash, onScreen ? 0.45 : 0.2);
+    }
+    if (state === 'game') {
+      if (onScreen) sfx('thunder');
+      else if (me.y < 60) sfx('thunderFar', undefined, undefined, 0.6);
     }
     if (state === 'game' && !me.dead && s.by !== myPeerId && immuneLeft() <= 0 && rectsOverlap(me.x, me.y, PLAYER_W, PLAYER_H, z.x, z.y, z.w, z.h)) {
       hitByLightning();
@@ -3871,6 +4803,7 @@ function hitByLightning() {
   me.vx = 0;
   me.jetting = false;
   me.dashT = 0;
+  sfx('stun');
   addDamageNumber(me.x, me.y, LIGHTNING_DAMAGE);
   if (sendDamage) {
     try { sendDamage({ a: LIGHTNING_DAMAGE, hp: me.hp }); } catch (e) { /* ignore */ }
@@ -3897,6 +4830,7 @@ function onChestBreak(d, fromId) {
   const cx = x + (CHEST_KINDS[kind].w || CHEST_W) / 2, cy = y + (CHEST_KINDS[kind].h || CHEST_H) / 2;
   emit(cx, cy, kind === 'ice' ? 40 : 18, fx1, 90, 0.6);
   emit(cx, cy, 8, fx2, 70, 0.5);
+  sfx('chestBreak', cx, cy);
   if (d.by !== myPeerId || state !== 'game') return;
   grantChestReward(kind, !!d.a);
 }
@@ -3941,9 +4875,13 @@ function resetLife() {
   me.fuel = MAX_FUEL;
   me.laserOut = 0;
   me.beam = null;
+  me.tridentOut = me.tridentCharging = me.launching = false;
+  me.tridentT = me.bubbleHold = 0;
+  me.tridentFlyReady = true;
+  me.bubbleCdUntil = me.blastCdUntil = 0;
   dashQueued = 0;
   powerQueued = '';
-  burstQueued = jetQueued = false;
+  burstQueued = jetQueued = tridentFlyQueued = false;
   me.dead = false;
   me.immuneUntil = performance.now() + SPAWN_IMMUNITY * 1000;
   me.flash = 0;
@@ -3967,7 +4905,7 @@ function leaveGame() {
   const leaving = room ? Promise.resolve(room.leave()).catch(() => {}) : Promise.resolve();
   room = null;
   sendState = sendHit = sendDamage = null;
-  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = sendClover = sendThorns = null;
+  sendChests = sendChestHit = sendChestBreak = sendArrow = sendStorm = sendBiome = sendAdmin = sendClover = sendThorns = sendBoom = null;
   craftOpen = storageOpen = false;
   state = 'leaving';
   Promise.race([leaving, new Promise(r => setTimeout(r, 800))]).then(() => location.reload());
@@ -4000,10 +4938,47 @@ function updateMe(dt) {
   }
   updateShuriken(dt);
   updateLaser(dt);
+  updateBubbleBurst(dt);
   if (me.charging) {
     if (heldItem().kind === 'bow') me.chargeT += dt;
     else me.charging = false;
   }
+  const hand = heldItem();
+  if (me.onGround) me.tridentFlyReady = true;
+  if (tridentFlyQueued) {
+    tridentFlyQueued = false;
+    if (hand.style !== 'trident' || performance.now() < me.stunUntil) { /* nothing */ }
+    else if (!inThunderBiome()) showToast('THE TRIDENT ONLY FLIES IN THE THUNDER BIOME', hand.color);
+    else if (me.tridentFlyReady) {
+      me.tridentFlyReady = false;
+      launchUp(TRIDENT_FLY_JUMPS);
+      sfx('airJump');
+      for (let i = 0; i < 14; i++) particles.push({ x: me.x + Math.random() * PLAYER_W, y: me.y + PLAYER_H, vx: (Math.random() - 0.5) * 40, vy: 40 + Math.random() * 60, life: 0.4, max: 0.4, color: Math.random() < 0.5 ? '#4ac8f0' : '#e8f8ff', g: 0 });
+    }
+  }
+  // Trident: a click stabs, holding the attack and letting go throws it.
+  if (hand.style === 'trident') {
+    if (punchQueued) {
+      me.attackSource = punchQueued;
+      punchQueued = false;
+      if (!me.tridentOut) {
+        me.tridentCharging = true;
+        me.tridentT = 0;
+      }
+    }
+    if (me.tridentCharging) {
+      if (mouseLeftHeld || held(PUNCH_KEYS)) me.tridentT += dt;
+      else {
+        me.tridentCharging = false;
+        if (!me.tridentOut && me.punchCd <= 0) {
+          if (me.tridentT >= TRIDENT_HOLD) throwTrident(me.attackSource === 'mouse');
+          else doMelee();
+        }
+      }
+    }
+    return;
+  }
+  me.tridentCharging = false;
   if (punchQueued) {
     me.attackSource = punchQueued;
     punchQueued = false;
@@ -4015,6 +4990,8 @@ function updateMe(dt) {
       const kind = heldItem().kind;
       if (kind === 'bow') {
         if (!me.charging) fireArrow(false, me.attackSource === 'mouse');
+      } else if (kind === 'staff' && heldItem().strike) {
+        castLightning(me.attackSource === 'mouse');
       } else if (kind === 'staff') {
         fireArrow(false, me.attackSource === 'mouse');
       } else if (kind === 'shuriken') {
@@ -4055,8 +5032,16 @@ function updateCamera(dt) {
   const k = Math.min(1, dt * 6);
   cam.x += (tx - cam.x) * k;
   cam.y += (ty - cam.y) * k;
-  cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, cam.x));
-  cam.y = Math.max(worldTop(), Math.min(WORLD_H - VIEW_H, cam.y));
+  clampCamera();
+}
+function clampCamera() {
+  if (inUnder(me.y)) {
+    cam.x = Math.max(0, Math.min(UG_W - VIEW_W, cam.x));
+    cam.y = Math.max(UG_TOP, Math.min(UG_BOTTOM - VIEW_H, cam.y));
+  } else {
+    cam.x = Math.max(0, Math.min(WORLD_W - VIEW_W, cam.x));
+    cam.y = Math.max(worldTop(), Math.min(WORLD_H - VIEW_H, cam.y));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4248,8 +5233,36 @@ const ICONS = {
     '.....oo.....', '....obbo....', '....obbo....', '...obbbbo...', '...obbbbo...', '..obhbbbbo..',
     '..obhbbbbo..', '.obhbbbbbbo.', '.obbbbbbbbo.', '.obbbbbbbbo.', '..obbbbbbo..', '...oooooo...',
   ],
+  dagger: [
+    '............', '............', '............', '........ooo.', '.......obbo.', '......obbo..',
+    '..o..obbo...', '..oobbbo....', '...ogoo.....', '..ogoo......', '.ogo........', '.oo.........',
+  ],
+  bubbler: [
+    '.........oo.', '........oco.', '.........oo.', '.oooooooo...', 'obbbbbbbbo..', 'obhhhhhhbbo.',
+    '.oooobbbbo..', '....obgo....', '...obgo.....', '...oggo.....', '...oooo.....', '............',
+  ],
+  bubbles: [
+    '..oooo......', '.obcbbo.....', 'obcbbbbo....', 'obbbbbbo....', '.obbbbo.....', '..oooo..oo..',
+    '.......obco.', '.......obbo.', '...oo...oo..', '..obco......', '..obbo......', '...oo.......',
+  ],
+  lstaff: [
+    '.......oyo..', '......oyhyo.', '.....oyhhbo.', '.....obhbbo.', '......obbo..', '.....ogoo...',
+    '....ogo.....', '...ogo......', '..ogo.......', '.ogo........', 'ogo.........', 'oo..........',
+  ],
+  trident: [
+    '.o...o...o..', 'obo.obo.obo.', 'obo.obo.obo.', 'obooobooobo.', '.obbbbbbbo..', '..ooobooo...',
+    '....obo.....', '....obo.....', '....ogo.....', '....ogo.....', '....ogo.....', '.....o......',
+  ],
+  torch: [
+    '.....oo.....', '....ofro....', '...ofyyfo...', '...ofyyfo...', '....offo....', '....osso....',
+    '.....ogo....', '.....ogo....', '.....ogo....', '.....ogo....', '.....ogo....', '.....oo.....',
+  ],
+  explosion: [
+    '.....o......', '..o.ofo.o...', '.ofooyoofo..', '..oyyyyyo...', '.oyyssyyyo..', 'ofyssssyyfo.',
+    '.oyyssyyyo..', '..ofyyyfo...', '.ofooyoofo..', '..o.ofo.o...', '.....o......', '............',
+  ],
 };
-const iconPalette = it => ({ o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8', r: '#ff4a4a', f: '#ff9a3d', w: it.fill || '#2a2a36' });
+const iconPalette = it => ({ o: '#140c1c', b: it.color, h: shade(it.color, 0.35), g: '#6a4a2a', s: '#e8e8e8', r: '#ff4a4a', f: '#ff9a3d', w: it.fill || '#2a2a36', y: '#fff27a', c: '#bff4ff' });
 function drawItemIcon(it, x, y) {
   const map = ICONS[it.icon || it.style || it.kind];
   const pal = iconPalette(it);
@@ -4265,11 +5278,16 @@ function drawItemIcon(it, x, y) {
 function itemDescription(it) {
   if (it.chestDamage) return it.chestDamage + ' DMG TO CHESTS ONLY' + (it.cooldown ? ' / ' + it.cooldown + 'S' : '') + (it === ITEMS.frozen_pickaxe ? ' / BREAKS ICE CHESTS' : '');
   if (it.mineAll) return it.damage + ' DMG / ' + it.cooldown + 'S / MINES EVERY CHEST';
+  if (it.style === 'trident') return it.damage + ' DMG / HOLD: THROW ' + it.throwDamage + ' / RIGHT CLICK: FLY';
+  if (it.stun) return it.damage + ' DMG / ' + it.cooldown + 'S / CAN STUN';
+  if (it.light) return 'LIGHTS UP DARK PLACES';
   if (it.kind === 'melee') return it.damage + ' DMG' + (it.freeze ? ' / CAN FREEZE' : it.cooldown ? ' / ' + it.cooldown + 'S COOLDOWN' : '');
   if (it.kind === 'bow') return it.damage + ' DMG / ' + it.charged + ' CHARGED';
   if (it.kind === 'shuriken') return it.damage + ' DMG X5 / RIGHT CLICK: X' + SHURIKEN_BURST_COUNT;
   if (it.flame) return Math.round(it.damage / it.tick) + ' DMG/S / ' + it.fuel + 'S FUEL / RIGHT CLICK: REFUEL';
+  if (it.bubble) return Math.round(it.damage / it.tick) + ' DMG/S / KNOCKBACK / RIGHT CLICK: REFUEL';
   if (it.kind === 'laser') return LASER_DPS + ' DMG/S / RIGHT CLICK: REFUEL';
+  if (it.strike) return 'LIGHTNING STRIKE AT CURSOR / ' + it.cooldown + 'S';
   if (it.kind === 'staff') return it.damage + ' DMG FIREBALLS / ' + it.cooldown + 'S / CAN SET ON FIRE';
   if (it.burn) return it.damage + ' DMG / ' + MAGMA_COMBO + ' HITS IN A ROW: BURN';
   if (ARMOR_KINDS[it.kind]) {
@@ -4359,6 +5377,18 @@ function drawHud() {
   ctx.fillRect(cb.x + cb.w - 14, cb.y + 3, 9, 8);
   if (pickerOpen) drawPicker();
 
+  const sb = SETTINGS_BTN;
+  ctx.fillStyle = settingsOpen || over(sb) ? 'rgba(58, 40, 90, 0.9)' : 'rgba(20, 12, 28, 0.7)';
+  ctx.fillRect(sb.x, sb.y, sb.w, sb.h);
+  drawSprite(GEAR_ICON, sb.x + 3, sb.y + 3, '#ffffff');
+  if (soundMuted) {
+    const mb = MUTE_BADGE;
+    ctx.fillStyle = 'rgba(120, 20, 30, 0.85)';
+    ctx.fillRect(mb.x, mb.y, mb.w, mb.h);
+    drawSprite(MUTED_ICON, mb.x + 3, mb.y + 3, '#ffffff');
+    drawText(ctx, 'NO SOUND', mb.x + 15, mb.y + 5, 1, '#ffffff');
+  }
+
   // Air jump indicator
   ctx.fillStyle = 'rgba(20, 12, 28, 0.7)';
   ctx.fillRect(VIEW_W - 76, 4, 72, 14);
@@ -4399,8 +5429,20 @@ function drawHud() {
     const reloading = me.ammo === 0 && me.burst === 0;
     statusRow('AMMO', reloading ? 1 - me.punchCd / SHURIKEN_BURST_COOLDOWN : me.ammo / SHURIKEN_AMMO,
       reloading ? '#5a6070' : it.color, reloading ? '' : String(me.ammo));
+  } else if (it.strike) {
+    statusRow('STRIKE', 1 - me.punchCd / it.cooldown, me.punchCd > 0 ? '#4a3a6a' : it.color, me.punchCd > 0 ? Math.ceil(me.punchCd) + 'S' : '');
+  } else if (it.style === 'trident') {
+    const fly = inThunderBiome() && me.tridentFlyReady;
+    statusRow('FLY', fly ? 1 : 0, fly ? it.color : '#3a4a5a', inThunderBiome() ? '' : 'OFF');
   }
-  const pk = powerKey();
+  const pk = powerKey(), nowMs = performance.now();
+  if (pk === 'bubble_burst') {
+    if (nowMs < me.bubbleCdUntil) statusRow('BUBBLE', 1 - (me.bubbleCdUntil - nowMs) / (BUBBLE_COOLDOWN * 1000), '#2a5a6a', Math.ceil((me.bubbleCdUntil - nowMs) / 1000) + 'S');
+    else statusRow('BUBBLE', me.bubbleHold / BUBBLE_HOLD, ITEMS.bubble_burst.color);
+  } else if (pk === 'explosion_power') {
+    if (nowMs < me.blastCdUntil) statusRow('BLAST', 1 - (me.blastCdUntil - nowMs) / (BLAST_COOLDOWN * 1000), '#6a3a2a', Math.ceil((me.blastCdUntil - nowMs) / 1000) + 'S');
+    else statusRow('BLAST', 1, ITEMS.explosion_power.color);
+  }
   if (pk === 'dash') {
     statusRow('DASH', 1 - me.dashCd / DASH_COOLDOWN, me.dashCd > 0 ? '#3a8a80' : ITEMS.dash.color);
   } else if (pk === 'jetpack') {
@@ -4474,10 +5516,47 @@ function drawDeathScreen() {
   canvas.style.cursor = h1 || h2 ? 'pointer' : 'default';
 }
 
+const hash01 = n => {
+  const v = Math.sin(n * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+};
+// A purple glow, small arcs crackling over the chest, and the odd spark.
+const BOLT_EMBLEM = ['..#', '.#.', '###', '.#.', '#..'];
+function drawThunderChestFx(c, sx, sy, w, h) {
+  const a = 0.45 + 0.25 * Math.sin(time * 5 + c.x);
+  ctx.fillStyle = `rgba(160, 110, 255, ${a.toFixed(2)})`;
+  ctx.fillRect(sx - 1, sy - 1, w + 2, 1);
+  ctx.fillRect(sx - 1, sy + h, w + 2, 1);
+  ctx.fillRect(sx - 1, sy, 1, h);
+  ctx.fillRect(sx + w, sy, 1, h);
+  ctx.fillStyle = `rgba(160, 110, 255, ${(a * 0.35).toFixed(2)})`;
+  ctx.fillRect(sx - 2, sy - 2, w + 4, 1);
+  ctx.fillRect(sx - 2, sy - 1, 1, h + 2);
+  ctx.fillRect(sx + w + 1, sy - 1, 1, h + 2);
+  drawSprite(BOLT_EMBLEM, sx + Math.floor(w / 2) - 1, sy + Math.floor(h / 2) - 2, '#fff27a');
+  const frame = Math.floor(time * (flashesOn() ? 12 : 3)) * 7 + c.x;
+  for (let k = 0; k < 3; k++) {
+    if (hash01(frame + k * 31) < 0.25) continue;
+    let x = Math.floor(hash01(frame + k * 13) * w), y = Math.floor(hash01(frame + k * 17) * h);
+    const dir = hash01(frame + k * 19) < 0.5 ? -1 : 1;
+    for (let s = 0; s < 8; s++) {
+      ctx.fillStyle = s % 3 === 1 ? '#c8a8ff' : '#ffffff';
+      ctx.fillRect(sx + x, sy + y, 1, 1);
+      x = Math.max(-2, Math.min(w + 1, x + dir));
+      y = Math.max(-2, Math.min(h + 1, y + (hash01(frame + k * 23 + s) < 0.5 ? -1 : 1)));
+    }
+  }
+  if (!lowDetail() && Math.random() < 0.06) {
+    const ang = Math.random() * Math.PI * 2;
+    particles.push({ x: c.x + w / 2 + Math.cos(ang) * w / 2, y: c.y + h / 2 + Math.sin(ang) * h / 2, vx: Math.cos(ang) * 30, vy: Math.sin(ang) * 30,
+      life: 0.25, max: 0.25, color: Math.random() < 0.3 ? '#fff27a' : '#c8a8ff', g: 0 });
+  }
+}
+
 function drawChests(cx, cy) {
   for (const c of chests) {
-    const sx = Math.round(c.x - cx), sy = Math.round(c.y - cy);
     const w = chestW(c), h = chestH(c);
+    const sx = Math.round(c.x - cx), sy = Math.round(c.y - cy) + sinkAt(c.x, w, c.y + h);
     if (sx < -w || sx > VIEW_W || sy < -h - 6 || sy > VIEW_H) continue;
     const pal = CHEST_KINDS[chestKind(c)].pal;
     const maxHp = chestMaxHp(c);
@@ -4501,6 +5580,7 @@ function drawChests(cx, cy) {
       for (const [px, py] of [[2, 6], [3, 7], [5, 8], [w - 4, 6], [w - 5, 8], [Math.floor(w / 2) + 2, h - 3]]) ctx.fillRect(sx + px, sy + py, 1, 1);
       if (Math.random() < 0.05) particles.push({ x: c.x + 2 + Math.random() * (w - 4), y: c.y, vx: (Math.random() - 0.5) * 6, vy: -18, life: 0.6, max: 0.6, color: '#ff8a2a', g: 0 });
     }
+    if (chestKind(c) === 'thunder' && !(c.flash > 0)) drawThunderChestFx(c, sx, sy, w, h);
     if (c.hp < maxHp) {
       ctx.fillStyle = '#140c1c';
       ctx.fillRect(sx - 1, sy - 5, w + 2, 3);
@@ -4584,6 +5664,106 @@ function drawInventory() {
   }
 }
 
+const GEAR_ICON = [
+  '...##...',
+  '.#.##.#.',
+  '..####..',
+  '###..###',
+  '###..###',
+  '..####..',
+  '.#.##.#.',
+  '...##...',
+];
+const MUTED_ICON = [
+  '...#.....',
+  '..##.#.#.',
+  '####..#..',
+  '####.#.#.',
+  '..##.....',
+  '...#.....',
+];
+function drawSprite(rows, x, y, color) {
+  ctx.fillStyle = color;
+  rows.forEach((row, r) => {
+    for (let c = 0; c < row.length; c++) if (row[c] === '#') ctx.fillRect(x + c, y + r, 1, 1);
+  });
+}
+
+function drawToggle(b, label, on) {
+  ctx.fillStyle = '#140c1c';
+  ctx.fillRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2);
+  ctx.fillStyle = over(b) ? '#4a3a6a' : '#3a2f4a';
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  drawText(ctx, label, b.x + 6, b.y + 5, 1, '#ffffff');
+  const pill = { x: b.x + b.w - 30, y: b.y + 3, w: 26, h: 10 };
+  ctx.fillStyle = on ? '#3a9a3a' : '#8a2a30';
+  ctx.fillRect(pill.x, pill.y, pill.w, pill.h);
+  drawText(ctx, on ? 'ON' : 'OFF', pill.x + pill.w / 2, pill.y + 3, 1, '#ffffff', 'center');
+}
+
+function drawSettingsPanel() {
+  const p = SETTINGS_PANEL;
+  ctx.fillStyle = '#8a7aaf';
+  ctx.fillRect(p.x - 1, p.y - 1, p.w + 2, p.h + 2);
+  ctx.fillStyle = '#241a33';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  drawText(ctx, 'SETTINGS', p.x + 6, p.y + 6, 1, '#ffe66d');
+  drawText(ctx, 'ESC: CLOSE', p.x + p.w - 6, p.y + 6, 1, '#8a7aaf', 'right');
+  SETTINGS_TABS.forEach((t, i) => {
+    const r = settingsTabRect(i), active = settingsTab === t.id;
+    ctx.fillStyle = active ? '#ffe66d' : over(r) ? '#7a6a9a' : '#5a4a7a';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = active ? '#4a3a6a' : '#3a2f4a';
+    ctx.fillRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    drawText(ctx, t.label, r.x + r.w / 2, r.y + 5, 1, active ? '#ffe66d' : '#b9a8e0', 'center');
+  });
+  if (settingsTab === 'audio') {
+    drawToggle(SOUND_BTN, 'SOUND (M)', !soundMuted);
+    VOL_KEYS.forEach((k, i) => {
+      const r = volSliderRect(i), v = settings[k];
+      drawText(ctx, k === 'music' ? 'MUSIC VOLUME' : 'SFX VOLUME', r.x, r.y - 10, 1, soundMuted ? '#7a7a8a' : '#ffffff');
+      drawText(ctx, String(v), r.x + r.w, r.y - 10, 1, v > 100 ? '#ffb040' : '#b9a8e0', 'right');
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.fillStyle = soundMuted ? '#5a5a6a' : k === 'music' ? '#6ad46a' : '#4aa8e8';
+      ctx.fillRect(r.x + 1, r.y + 1, Math.round((r.w - 2) * v / VOL_MAX), r.h - 2);
+      ctx.fillStyle = '#5a4a7a';
+      ctx.fillRect(r.x + Math.round(r.w / 2), r.y - 1, 1, r.h + 2);
+      const kx = r.x + Math.round(r.w * v / VOL_MAX);
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(kx - 2, r.y - 3, 5, r.h + 6);
+      ctx.fillStyle = volDrag === k || over({ x: r.x - 4, y: r.y - 6, w: r.w + 8, h: r.h + 12 }) ? '#ffe66d' : '#ffffff';
+      ctx.fillRect(kx - 1, r.y - 2, 3, r.h + 4);
+    });
+    AMBIENT_TOGGLES.forEach((a, i) => {
+      const r = ambientRect(i), on = settings[a.key];
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(r.x - 1, r.y - 1, r.w + 2, r.h + 2);
+      ctx.fillStyle = on ? (over(r) ? '#3f8a3f' : '#2f6a2f') : (over(r) ? '#8a2a30' : '#6a2228');
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      drawText(ctx, a.label, r.x + r.w / 2, r.y + 3, 1, '#ffffff', 'center');
+      drawText(ctx, on ? 'ON' : 'OFF', r.x + r.w / 2, r.y + 10, 1, on ? '#a8f0a8' : '#ffb0b0', 'center');
+    });
+    VOL_BTNS.forEach((b, i) => {
+      const rb = volBtnRect(i), off = b.id === 'load' && !settings.saved;
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(rb.x - 1, rb.y - 1, rb.w + 2, rb.h + 2);
+      ctx.fillStyle = over(rb) && !off ? '#4a3a6a' : '#3a2f4a';
+      ctx.fillRect(rb.x, rb.y, rb.w, rb.h);
+      drawText(ctx, b.label, rb.x + rb.w / 2, rb.y + 5, 1, off ? '#6a5a8a' : '#ffe66d', 'center');
+    });
+    const sv = settings.saved;
+    drawText(ctx, sv ? 'MY VOLUME: MUSIC ' + sv.music + ' / SFX ' + sv.sfx : '100 IS NORMAL / 200 IS TWICE AS LOUD',
+      p.x + p.w / 2, p.y + p.h - 12, 1, '#8a7aaf', 'center');
+  } else {
+    drawToggle(LOW_DETAIL_BTN, 'LOW DETAIL MODE', settings.lowDetail);
+    drawToggle(FLASHES_BTN, 'SCREEN FLASHES', settings.flashes);
+    const lines = ['LOW DETAIL: NO STORM SKY, SNOW,', 'FIRE RAIN, RAIN, MIST OR TINTS,', 'AND SIMPLER LIGHTNING.', '',
+      'SCREEN FLASHES OFF: NO LIGHTNING', 'FLASHES OR FLICKERING LIGHT.'];
+    lines.forEach((l, i) => drawText(ctx, l, p.x + 12, p.y + 88 + i * 10, 1, '#b9a8e0'));
+  }
+}
+
 function drawAdminPanel() {
   const p = ADMIN_PANEL;
   ctx.fillStyle = '#c8383c';
@@ -4643,8 +5823,9 @@ function drawAdminPanel() {
       thunder: 'YOUR PLATFORM',
       tracker: trackerRepeat ? 'ON: CLICK TO STOP' : 'X2 CLICK: REPEAT',
       shard: 'YOUR PLATFORM',
+      rock: rock.broken ? 'GO UNDERGROUND' : 'HP ' + rock.hp,
     };
-    const colors = { ice: '#4a8ab0', biome: GRASS[BIOME_SECTION].dark, kill: '#8a2a30', break: '#7a5a2a', thunder: '#6a6a3a', tracker: '#5a5a2a', shard: '#3a7a9a' };
+    const colors = { ice: '#4a8ab0', biome: GRASS[BIOME_SECTION].dark, kill: '#8a2a30', break: '#7a5a2a', thunder: '#6a6a3a', tracker: '#5a5a2a', shard: '#3a7a9a', rock: '#5a5664' };
     ADMIN_EVENTS.forEach((ev, i) => {
       const r = eventBtnRect(i), on = ev.id === 'tracker' && trackerRepeat;
       ctx.fillStyle = over(r) ? '#ffffff' : on ? '#fff6a0' : '#140c1c';
@@ -4736,7 +5917,7 @@ function drawToast() {
   const w = textWidth(toast.text, 1) + 10;
   ctx.fillStyle = 'rgba(20, 12, 28, 0.8)';
   ctx.fillRect(Math.round(VIEW_W / 2 - w / 2), VIEW_H - 34, w, 13);
-  drawText(ctx, toast.text, VIEW_W / 2, VIEW_H - 30, 1, toast.color, 'center');
+  drawText(ctx, toast.text, VIEW_W / 2, VIEW_H - 30, 1, typeof toast.color === 'function' ? toast.color() : toast.color, 'center');
   ctx.globalAlpha = 1;
 }
 
@@ -4748,8 +5929,8 @@ const inSnowBiome = () => state === 'game' && !me.dead && sectionOf(me.y + PLAYE
 function updateSnow(dt) {
   const inside = inSnowBiome();
   snowAmt = inside ? Math.min(1, snowAmt + dt / SNOW_FADE_IN) : Math.max(0, snowAmt - dt / SNOW_FADE_OUT);
-  if (snowAmt === 0) snowflakes.length = 0;
-  if (inside && snowflakes.length < 400) {
+  if (snowAmt === 0 || lowDetail()) snowflakes.length = 0;
+  if (inside && !lowDetail() && snowflakes.length < 400) {
     // Fill the whole view straight away when arriving, then keep it topped up from above.
     const sparse = snowflakes.length < 80;
     for (let n = sparse ? 8 : Math.floor(dt * 50 + Math.random()); n > 0; n--) {
@@ -4776,7 +5957,7 @@ function drawSnow(cx, cy) {
 
 // Whitens the whole view (neighbouring biomes included) only while the player is in the snow biome.
 function drawFrost() {
-  if (snowAmt <= 0) return;
+  if (snowAmt <= 0 || lowDetail()) return;
   ctx.fillStyle = `rgba(236, 248, 255, ${(0.3 * snowAmt).toFixed(3)})`;
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 }
@@ -4790,11 +5971,13 @@ function updateVolcano(dt) {
   lavaAmt = inside ? Math.min(1, lavaAmt + dt / SNOW_FADE_IN) : Math.max(0, lavaAmt - dt / SNOW_FADE_OUT);
   const onFire = state === 'game' && !me.dead && burning();
   burnAmt = onFire ? Math.min(1, burnAmt + dt / SNOW_FADE_IN) : Math.max(0, burnAmt - dt / SNOW_FADE_OUT);
-  if (lavaAmt === 0) fireRain.length = 0;
-  if (inside && fireRain.length < 90) {
+  if (lavaAmt === 0 || lowDetail()) fireRain.length = 0;
+  // With the thunder biome open above, the fire starts at the volcano's top edge instead of the view's.
+  const fireTop = biomeOpen ? Math.max(cam.y - 10, 0) : cam.y - 10;
+  if (inside && !lowDetail() && fireRain.length < 90) {
     const sparse = fireRain.length < 15;
     for (let n = sparse ? 6 : Math.floor(dt * 22 + Math.random()); n > 0; n--) {
-      fireRain.push({ x: cam.x + Math.random() * (VIEW_W + 120), y: sparse ? cam.y + Math.random() * VIEW_H * 0.8 : cam.y - 10,
+      fireRain.push({ x: cam.x + Math.random() * (VIEW_W + 120), y: sparse ? fireTop + Math.random() * (cam.y + VIEW_H * 0.8 - fireTop) : fireTop,
         vx: -25 - Math.random() * 20, vy: 110 + Math.random() * 70, big: Math.random() < 0.3 });
     }
   }
@@ -4826,6 +6009,7 @@ function drawFireRain(cx, cy) {
   if (lavaAmt <= 0) return;
   ctx.globalAlpha = lavaAmt;
   for (const f of fireRain) {
+    if (biomeOpen && f.y < 0) continue;
     const x = Math.round(f.x - cx), y = Math.round(f.y - cy);
     const ux = f.vx / f.vy, k = f.big ? 2 : 1;
     ctx.fillStyle = 'rgba(255, 90, 20, 0.35)';
@@ -4840,6 +6024,212 @@ function drawFireRain(cx, cy) {
     ctx.fillRect(x, y, k, k);
   }
   ctx.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Thunder biome weather: storm clouds replace the night sky, rain lashes down,
+// lightning flickers in the distance and a drifting mist hides everything.
+// ---------------------------------------------------------------------------
+// Smooth value noise that wraps every px cells across and py cells down, so the art tiles.
+function makeNoise(seed, px, py = px) {
+  const rnd = mulberry32(seed);
+  const t = Array.from({ length: px * py }, rnd);
+  const at = (i, j) => t[(((j % py) + py) % py) * px + (((i % px) + px) % px)];
+  const ease = v => v * v * (3 - 2 * v);
+  return (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), u = ease(x - xi), v = ease(y - yi);
+    const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  };
+}
+
+const [stormSkyCanvas, ssg] = makeCanvas(VIEW_W, VIEW_H);
+(function buildStormSky() {
+  const bands = ['#07050c', '#0b0812', '#100b18', '#140e1e', '#1a1226', '#20162e', '#261a34', '#2c1e3a'];
+  const bh = Math.ceil(VIEW_H / bands.length);
+  bands.forEach((c, i) => { ssg.fillStyle = c; ssg.fillRect(0, i * bh, VIEW_W, bh); });
+})();
+
+// A sideways-tiling strip of chunky storm clouds; denser at the top, ragged underneath.
+function buildCloudStrip(w, h, seed, cell, colors) {
+  const [c, g] = makeCanvas(w, h);
+  const n1 = makeNoise(seed, 16), n2 = makeNoise(seed + 1, 32);
+  for (let y = 0; y < h; y += cell) {
+    for (let x = 0; x < w; x += cell) {
+      const v = n1(x / w * 16, y / 40) * 0.65 + n2(x / w * 32, y / 18) * 0.35;
+      const need = 0.32 + 0.45 * (y / h);
+      if (v < need) continue;
+      const k = (v - need) / (1 - need);
+      g.fillStyle = k > 0.45 ? colors[0] : k > 0.2 ? colors[1] : colors[2];
+      g.fillRect(x, y, cell, cell);
+    }
+  }
+  return c;
+}
+const cloudsFar = buildCloudStrip(960, 150, 91, 4, ['#1e1628', '#261c32', '#30243e']);
+const cloudsNear = buildCloudStrip(960, 120, 57, 6, ['#140e1c', '#1c1426', '#2a1f36']);
+
+// Mist: soft patches of pale purple, two tiling layers drifting at different speeds.
+function buildMist(w, h, seed) {
+  const [c, g] = makeCanvas(w, h);
+  const n1 = makeNoise(seed, 12, 4), n2 = makeNoise(seed + 7, 24, 10);
+  for (let y = 0; y < h; y += 2) {
+    for (let x = 0; x < w; x += 2) {
+      const v = n1(x / w * 12, y / h * 4) * 0.7 + n2(x / w * 24, y / h * 10) * 0.3;
+      const a = Math.max(0, (v - 0.35) / 0.65);
+      if (a <= 0) continue;
+      g.fillStyle = `rgba(176, 150, 222, ${(a * 0.85).toFixed(3)})`;
+      g.fillRect(x, y, 2, 2);
+    }
+  }
+  return c;
+}
+const mistBack = buildMist(960, VIEW_H, 303);
+const mistFront = buildMist(960, VIEW_H, 808);
+
+const STORM_FADE = 1.2, BIOME_FADE_OUT = 2;
+let stormAmt = 0;
+const rain = [];
+let nextBgFlash = 0, bgFlash = 0, bgBolt = null, lastBgThunder = 0;
+const inThunderBiome = () => state === 'game' && !me.dead && biomeOpen && sectionOf(me.y + PLAYER_H) >= BIOME_SECTION;
+const windNow = () => -70 - 50 * Math.sin(time * 0.4) - 30 * Math.sin(time * 1.7);
+
+function makeBgBolt() {
+  let x = 40 + Math.random() * (VIEW_W - 80), y = 0;
+  const pts = [[x, y]];
+  while (y < 90 + Math.random() * 60) {
+    x += (Math.random() - 0.5) * 18;
+    y += 6 + Math.random() * 10;
+    pts.push([x, y]);
+  }
+  return pts;
+}
+
+function updateStormWeather(dt) {
+  if (biomeFalling && (state !== 'game' || me.dead || me.y >= 0)) {
+    biomeFalling = false;
+    solids.find(s => s.t === 'ceiling').y = -16;
+  }
+  biomeFade = biomeOpen ? Math.min(1, biomeFade + dt / 0.8) : Math.max(0, biomeFade - dt / BIOME_FADE_OUT);
+  const inside = inThunderBiome();
+  stormAmt = inside ? Math.min(1, stormAmt + dt / STORM_FADE) : Math.max(0, stormAmt - dt / (biomeOpen ? STORM_FADE : BIOME_FADE_OUT));
+  bgFlash = Math.max(0, bgFlash - dt * 3);
+  if (stormAmt === 0) {
+    rain.length = 0;
+    nextBgFlash = 0;
+    return;
+  }
+  // Distant lightning, sometimes with a second flicker right after.
+  const now = performance.now();
+  if (!nextBgFlash) nextBgFlash = now + 1500;
+  if (now >= nextBgFlash) {
+    bgFlash = flashesOn() ? 0.6 + Math.random() * 0.4 : 0;
+    bgBolt = Math.random() < 0.7 ? makeBgBolt() : null;
+    if (now - lastBgThunder > 1000) {
+      lastBgThunder = now;
+      const vol = 0.5 * stormAmt;
+      setTimeout(() => sfx('thunderFar', undefined, undefined, vol), 300 + Math.random() * 900);
+    }
+    nextBgFlash = now + (Math.random() < 0.3 ? 140 : 2500 + Math.random() * 5000);
+  }
+  const wind = windNow();
+  if (lowDetail()) rain.length = 0;
+  else if (inside && rain.length < 320) {
+    const sparse = rain.length < 60;
+    for (let n = sparse ? 30 : Math.floor(dt * 260 + Math.random()); n > 0; n--) {
+      rain.push({ x: cam.x - 40 + Math.random() * (VIEW_W + 120), y: sparse ? cam.y + Math.random() * VIEW_H : cam.y - 8,
+        vy: 380 + Math.random() * 120, l: 4 + Math.floor(Math.random() * 4) });
+    }
+  }
+  for (let i = rain.length - 1; i >= 0; i--) {
+    const d = rain[i];
+    d.x += wind * dt;
+    d.y += d.vy * dt;
+    if (overlaps(d.x, d.y, 1, 1)) {
+      if (Math.random() < 0.5) {
+        particles.push({ x: d.x, y: d.y - 1, vx: (Math.random() - 0.5) * 30, vy: -20 - Math.random() * 20, life: 0.2, max: 0.2, color: '#a898d0', g: 300 });
+      }
+      rain.splice(i, 1);
+    } else if (d.y > cam.y + VIEW_H + 10) {
+      rain.splice(i, 1);
+    }
+  }
+  // Static crackles along the platforms.
+  for (const s of BIOME_PLATS) {
+    if (s.x + s.w < cam.x || s.x > cam.x + VIEW_W || s.y < cam.y || s.y > cam.y + VIEW_H) continue;
+    if (Math.random() < dt * s.w / 300) {
+      emit(s.x + Math.random() * s.w, s.y - 1, 2, Math.random() < 0.5 ? '#c8a0ff' : '#8ad8ff', 25, 0.2);
+    }
+  }
+}
+
+// Sky part, drawn behind the hills.
+function drawStormSky(g, camX) {
+  if (stormAmt <= 0 || lowDetail()) return;
+  g.globalAlpha = stormAmt;
+  g.drawImage(stormSkyCanvas, 0, 0);
+  if (bgFlash > 0) {
+    g.fillStyle = `rgba(150, 120, 210, ${(0.35 * bgFlash).toFixed(3)})`;
+    g.fillRect(0, 0, VIEW_W, VIEW_H);
+    if (bgBolt) {
+      g.globalAlpha = stormAmt * Math.min(1, bgFlash * 1.5);
+      for (let i = 1; i < bgBolt.length; i++) {
+        drawLine(bgBolt[i - 1][0], bgBolt[i - 1][1], bgBolt[i][0], bgBolt[i][1], 'rgba(200, 180, 255, 0.5)', 3);
+        drawLine(bgBolt[i - 1][0], bgBolt[i - 1][1], bgBolt[i][0], bgBolt[i][1], '#f4eaff', 1);
+      }
+      g.globalAlpha = stormAmt;
+    }
+  }
+  for (const [img, speed, par, y] of [[cloudsFar, 6, 0.05, -10], [cloudsNear, 14, 0.1, -20]]) {
+    const ox = -Math.round(time * speed + camX * par) % img.width;
+    for (let x = ox - img.width; x < VIEW_W; x += img.width) g.drawImage(img, x, y);
+  }
+  if (bgFlash > 0) {
+    g.fillStyle = `rgba(190, 170, 240, ${(0.18 * bgFlash).toFixed(3)})`;
+    g.fillRect(0, 0, VIEW_W, 140);
+  }
+  g.globalAlpha = 1;
+}
+
+// Darkens the world (but not the players) while the storm is overhead.
+function drawStormShade() {
+  if (stormAmt <= 0 || lowDetail()) return;
+  ctx.fillStyle = `rgba(8, 4, 20, ${(0.3 * stormAmt).toFixed(3)})`;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+}
+
+// Rain and mist, drawn over everything in the world (players included).
+function drawStormFront(cx, cy) {
+  if (stormAmt <= 0 || lowDetail()) return;
+  const wind = windNow();
+  ctx.globalAlpha = 0.55 * stormAmt;
+  ctx.fillStyle = '#b4a8e0';
+  for (const d of rain) {
+    const x = d.x - cx, y = d.y - cy, sx = wind / d.vy;
+    for (let k = 0; k < d.l; k++) ctx.fillRect(Math.round(x - sx * k), Math.round(y - k), 1, 1);
+  }
+  const lit = 1 + bgFlash * 0.6;
+  for (const [img, speed, par, a] of [[mistBack, 10, 0.5, 0.45], [mistFront, 22, 0.9, 0.4]]) {
+    ctx.globalAlpha = Math.min(1, a * stormAmt * lit);
+    const ox = -Math.round(time * speed + cx * par) % img.width;
+    const oy = ((-Math.round(cy * par + Math.sin(time * 0.3 + speed) * 6)) % VIEW_H + VIEW_H) % VIEW_H;
+    for (let x = ox - img.width; x < VIEW_W; x += img.width) {
+      ctx.drawImage(img, x, oy);
+      ctx.drawImage(img, x, oy - VIEW_H);
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = `rgba(150, 130, 190, ${(0.14 * stormAmt).toFixed(3)})`;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  const v = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.3, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.6);
+  v.addColorStop(0, 'rgba(10, 4, 20, 0)');
+  v.addColorStop(1, `rgba(10, 4, 20, ${(0.55 * stormAmt).toFixed(3)})`);
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  if (bgFlash > 0) {
+    ctx.fillStyle = `rgba(220, 210, 255, ${(0.12 * bgFlash * stormAmt).toFixed(3)})`;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
 }
 
 // Magma tops shimmer, and the whole view gets a red-orange heat glow inside the volcano.
@@ -4859,17 +6249,19 @@ function drawMagmaGlow(cx, cy) {
 // Being on fire gives the same red glow as the volcano (without the falling fire).
 let burnAmt = 0;
 function drawHeat() {
-  const heat = Math.max(lavaAmt, burnAmt);
+  const heat = Math.max(lowDetail() ? 0 : lavaAmt, burnAmt);
   if (heat <= 0) return;
+  // The volcano's glow stops at its top edge while the thunder biome sits above it.
+  const top = biomeOpen && lavaAmt > burnAmt ? Math.max(0, Math.min(VIEW_H, -Math.round(cam.y))) : 0;
   ctx.fillStyle = `rgba(255, 80, 20, ${(0.12 * heat).toFixed(3)})`;
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.fillRect(0, top, VIEW_W, VIEW_H - top);
   const gr = ctx.createLinearGradient(0, VIEW_H * 0.55, 0, VIEW_H);
   gr.addColorStop(0, 'rgba(255, 90, 20, 0)');
   gr.addColorStop(1, `rgba(255, 90, 20, ${(0.22 * heat).toFixed(3)})`);
   ctx.fillStyle = gr;
-  ctx.fillRect(0, VIEW_H * 0.55, VIEW_W, VIEW_H * 0.45);
+  ctx.fillRect(0, Math.max(top, VIEW_H * 0.55), VIEW_W, VIEW_H - Math.max(top, VIEW_H * 0.55));
   if (burnAmt > 0) {
-    const pulse = 0.8 + 0.2 * Math.sin(time * 6);
+    const pulse = flashesOn() ? 0.8 + 0.2 * Math.sin(time * 6) : 0.9;
     ctx.fillStyle = `rgba(255, 50, 20, ${(0.1 * burnAmt * pulse).toFixed(3)})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
     const v = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.35, VIEW_W / 2, VIEW_H / 2, VIEW_W * 0.6);
@@ -4881,19 +6273,215 @@ function drawHeat() {
 }
 
 // Draws the part of a world-space image (whose top edge sits at world y = top) that is in view.
+function drawRock(cx, cy) {
+  const x = Math.round(rock.x - cx), y = Math.round(rock.y - cy);
+  if (x > VIEW_W || x + rock.w < 0 || y > VIEW_H || y + rock.h < 0) return;
+  if (rock.broken) {
+    // The open hole, with rubble on both lips.
+    const hx = HOLE.x - cx, gy = GROUND_Y - cy;
+    ctx.fillStyle = '#07040c';
+    ctx.fillRect(hx, gy, HOLE.w, WORLD_H - GROUND_Y);
+    ctx.fillStyle = '#1c1a22';
+    ctx.fillRect(hx - 1, gy, 1, WORLD_H - GROUND_Y);
+    ctx.fillRect(hx + HOLE.w, gy, 1, WORLD_H - GROUND_Y);
+    for (const [ox, w, h, c] of [[-10, 6, 3, '#6e6a7a'], [-5, 4, 2, '#4a4654'], [HOLE.w + 2, 5, 3, '#6e6a7a'], [HOLE.w + 7, 4, 2, '#4a4654'], [HOLE.w + 12, 3, 2, '#6e6a7a']]) {
+      ctx.fillStyle = c;
+      ctx.fillRect(hx + ox, gy - h, w, h);
+    }
+    return;
+  }
+  ctx.drawImage(rockImg, x, y);
+  const dmg = 1 - rock.hp / ROCK_HP;
+  for (let i = 0; i < Math.ceil(dmg * rockCracks.length); i++) {
+    const pts = rockCracks[i];
+    for (let k = 1; k < pts.length; k++) drawLine(x + pts[k - 1][0], y + pts[k - 1][1], x + pts[k][0], y + pts[k][1], '#1c1a22', 1);
+  }
+  if (performance.now() - rock.flash < 90) {
+    ctx.globalAlpha = 0.6;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(rockImg, x, y);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+  if (rock.hp < ROCK_HP) {
+    ctx.fillStyle = '#140c1c';
+    ctx.fillRect(x - 1, y - 6, rock.w + 2, 4);
+    ctx.fillStyle = hpColor(rock.hp / ROCK_HP);
+    ctx.fillRect(x, y - 5, Math.round(rock.w * rock.hp / ROCK_HP), 2);
+  }
+}
+
+function drawRope(cx, cy) {
+  const x = Math.round(ROPE.x - cx) - 1, top = Math.max(ROPE.y1 - cy, -4), bottom = Math.min(ROPE.y2 - cy, VIEW_H + 4);
+  if (x < -4 || x > VIEW_W + 4 || bottom < top) return;
+  if (lowDetail()) {
+    ctx.fillStyle = '#9a7a4a';
+    ctx.fillRect(x, top, 2, bottom - top);
+    return;
+  }
+  ctx.fillStyle = '#5a3e22';
+  ctx.fillRect(x - 1, top, 4, bottom - top);
+  for (let y = top - ((top + cy) % 4 + 4) % 4; y < bottom; y += 4) {
+    ctx.fillStyle = '#b08a52';
+    ctx.fillRect(x, Math.max(top, y), 1, 2);
+    ctx.fillStyle = '#8a6a3c';
+    ctx.fillRect(x + 1, Math.max(top, y + 2), 1, 2);
+  }
+  ctx.fillStyle = '#5a3e22';
+  ctx.fillRect(x - 2, ROPE.y2 - cy - 3, 6, 3);
+}
+
+function drawLava(cx, cy) {
+  const top = Math.round(LAVA_Y - cy);
+  if (top > VIEW_H) return;
+  ctx.fillStyle = '#8a1e14';
+  ctx.fillRect(0, top + 3, VIEW_W, VIEW_H - top);
+  for (let sx = 0; sx < VIEW_W; sx += 2) {
+    const wx = sx + cx;
+    const wave = Math.round(Math.sin(wx * 0.05 + time * 2) * 1.5 + Math.sin(wx * 0.13 - time * 3));
+    ctx.fillStyle = '#c8381c';
+    ctx.fillRect(sx, top + wave + 3, 2, 6);
+    ctx.fillStyle = '#ff6a1a';
+    ctx.fillRect(sx, top + wave, 2, 4);
+    ctx.fillStyle = '#ffb040';
+    ctx.fillRect(sx, top + wave, 2, 2);
+    if ((Math.floor(wx / 2) + Math.floor(time * 5)) % 11 === 0) {
+      ctx.fillStyle = '#ffe08a';
+      ctx.fillRect(sx, top + wave, 2, 1);
+    }
+  }
+  for (let k = 0; k < 6; k++) {
+    const wx = Math.floor((k * 173 + time * 9) % VIEW_W);
+    ctx.fillStyle = '#ff6a1a';
+    ctx.fillRect(wx, top + 14 + (k % 3) * 8, 6, 2);
+  }
+  if (Math.random() < (lowDetail() ? 0.1 : 0.35)) {
+    particles.push({ x: cx + Math.random() * VIEW_W, y: LAVA_Y, vx: (Math.random() - 0.5) * 10, vy: -20 - Math.random() * 30, life: 0.8, max: 0.8, color: Math.random() < 0.5 ? '#ff8a2a' : '#ffe08a', g: 0 });
+  }
+}
+
+// Underground darkness: a dim layer with holes cut out around light sources. It's drawn at
+// half resolution so the light falls off in chunky 2px steps.
+const TORCH_LIGHT = 100;
+const [darkCanvas, dkg] = makeCanvas(VIEW_W / 2, VIEW_H / 2);
+function caveLights(cx, cy) {
+  const L = [];
+  const add = (x, y, r, a, warm) => {
+    if (!(r > 0) || x + r < cx || x - r > cx + VIEW_W || y + r < cy || y - r > cy + VIEW_H) return;
+    L.push([x - cx, y - cy, r, a, warm]);
+  };
+  const beam = (x1, y1, x2, y2, it) => {
+    if (!it || it.bubble) return;
+    const len = Math.hypot(x2 - x1, y2 - y1), step = it.flame ? 22 : 28;
+    for (let d = 0; d <= len; d += step) {
+      const k = d / (len || 1);
+      add(x1 + (x2 - x1) * k, y1 + (y2 - y1) * k, it.flame ? 46 : 26, it.flame ? 0.9 : 0.6, it.flame);
+    }
+  };
+  const flick = 1 + Math.sin(time * 13) * 0.03 + Math.sin(time * 7.3) * 0.04;
+  add(UG_SHAFT.x + UG_SHAFT.w / 2, UG_TOP + UG_CEIL, 70, 0.45, false);
+  add(ROPE.x, ROPE.y2 - 16, 40, 0.4, false);
+  if (!me.dead) {
+    if (hasTorch()) add(me.x + PLAYER_W / 2, me.y + 3, TORCH_LIGHT * flick, 1, true);
+    else add(me.x + PLAYER_W / 2, me.y + 6, 30, 0.5, false);
+    if (burning()) add(me.x + PLAYER_W / 2, me.y + 6, 40, 0.8, true);
+    if (me.beam) beam(me.beam.x1, me.beam.y1, me.beam.x2, me.beam.y2, heldItem());
+  }
+  for (const r of remotes.values()) {
+    if (r.dead || hiddenFromMe(r)) continue;
+    if (r.tc) add(r.x + PLAYER_W / 2, r.y + 3, TORCH_LIGHT * flick, 1, true);
+    else add(r.x + PLAYER_W / 2, r.y + 6, 16, 0.3, false);
+    if (r.bn) add(r.x + PLAYER_W / 2, r.y + 6, 40, 0.8, true);
+    if (r.lz) beam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], ITEMS[r.w]);
+  }
+  for (const a of arrows) if (ITEMS[a.w].kind === 'staff') add(a.x, a.y, 50 * flick, 0.95, true);
+  const now = performance.now();
+  for (const b of blasts) add(b.x, b.y, 150 * (1 - (now - b.at) / 350), 1, true);
+  return L;
+}
+function drawDarkness(cx, cy) {
+  const g = dkg, W = darkCanvas.width, H = darkCanvas.height, S = 0.5;
+  const lights = caveLights(cx, cy);
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = 'rgba(3, 2, 6, 0.97)';
+  g.fillRect(0, 0, W, H);
+  g.globalCompositeOperation = 'destination-out';
+  const lt = (LAVA_Y - cy) * S;
+  if (lt < H + 40) {
+    const lg = g.createLinearGradient(0, lt - 22, 0, lt + 3);
+    lg.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    lg.addColorStop(0.7, 'rgba(0, 0, 0, 0.35)');
+    lg.addColorStop(1, 'rgba(0, 0, 0, 0.9)');
+    g.fillStyle = lg;
+    g.fillRect(0, lt - 22, W, H - lt + 22);
+  }
+  for (const [x, y, r, a] of lights) {
+    const gr = g.createRadialGradient(x * S, y * S, 0, x * S, y * S, r * S);
+    gr.addColorStop(0, `rgba(0, 0, 0, ${a})`);
+    gr.addColorStop(0.55, `rgba(0, 0, 0, ${a * 0.7})`);
+    gr.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = gr;
+    g.fillRect((x - r) * S, (y - r) * S, r * 2 * S, r * 2 * S);
+  }
+  ctx.drawImage(darkCanvas, 0, 0, VIEW_W, VIEW_H);
+  if (lowDetail()) return;
+  // Fire tints what it lights a little orange.
+  ctx.globalCompositeOperation = 'lighter';
+  for (const [x, y, r, , warm] of lights) {
+    if (!warm) continue;
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, r * 0.8);
+    gr.addColorStop(0, 'rgba(255, 120, 40, 0.12)');
+    gr.addColorStop(1, 'rgba(255, 120, 40, 0)');
+    ctx.fillStyle = gr;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
 function drawWorldImage(img, top, cx, cy) {
   const sy = Math.max(0, cy - top), ey = Math.min(img.height, cy + VIEW_H - top);
   if (ey <= sy) return;
   ctx.drawImage(img, cx, sy, VIEW_W, ey - sy, 0, top + sy - cy, VIEW_W, ey - sy);
 }
 
+// Cloud platforms dip a few pixels (with a small springy bounce) while someone stands on them.
+// Only the drawing moves; collision stays put.
+const CLOUD_SINK = 3;
+const cloudUnder = (x, w, feet) => cloudPlats.find(c => Math.abs(c.s.y - feet) <= 1.5 && x + w > c.s.x && x < c.s.x + c.s.w);
+const sinkAt = (x, w, feet) => {
+  if (biomeFade <= 0) return 0;
+  const c = cloudUnder(x, w, feet);
+  return c ? Math.round(c.sink) : 0;
+};
+function updateClouds(dt) {
+  if (biomeFade <= 0) return;
+  const loaded = new Set();
+  const add = (x, y) => { const c = cloudUnder(x, PLAYER_W, y + PLAYER_H); if (c) loaded.add(c); };
+  if (state === 'game' && !me.dead) add(me.x, me.y);
+  for (const r of remotes.values()) if (!r.dead) add(r.x, r.y);
+  for (const c of cloudPlats) {
+    const target = loaded.has(c) ? CLOUD_SINK : 0;
+    if (!target && Math.abs(c.sink) < 0.05 && Math.abs(c.v) < 0.05) { c.sink = c.v = 0; continue; }
+    c.v += ((target - c.sink) * 220 - c.v * 14) * dt;
+    c.sink += c.v * dt;
+  }
+}
+function drawClouds(cx, cy) {
+  for (const c of cloudPlats) {
+    const x = c.s.x - cx, y = c.s.y - CLOUD_PAD - cy + Math.round(c.sink);
+    if (x > VIEW_W || x + c.s.w < 0 || y > VIEW_H || y + c.img.height < 0) continue;
+    ctx.drawImage(c.img, x, y);
+  }
+}
+
 function drawBushes(cx, cy) {
-  if (!biomeOpen) return;
+  if (biomeFade <= 0) return;
   const mine = myBush();
   bushes.forEach((b, i) => {
-    const sx = b.x - cx, sy = b.y - cy;
+    const sx = b.x - cx, sy = b.y - cy + sinkAt(b.x, b.w, b.y + b.h);
     if (sx < -b.w || sx > VIEW_W || sy < -b.h || sy > VIEW_H) return;
-    ctx.globalAlpha = i === mine ? 0.55 : 1;
+    ctx.globalAlpha = (i === mine ? 0.55 : 1) * biomeFade;
     ctx.drawImage(b.img, sx, sy);
   });
   ctx.globalAlpha = 1;
@@ -4908,6 +6496,44 @@ const CLOUD_ROWS = [
   '.oddddddddddddddo.',
   '..oooooooooooooo..',
 ];
+// Lightning: a jagged main channel (midpoint displacement) with a few forks.
+const LEADER_TIME = 0.25;
+function jagPath(x0, y0, x1, y1, disp) {
+  let pts = [[x0, y0], [x1, y1]];
+  for (let d = disp; d > 2; d /= 2) {
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+      out.push([(ax + bx) / 2 + (Math.random() - 0.5) * d, (ay + by) / 2 + (Math.random() - 0.5) * d * 0.25], pts[i]);
+    }
+    pts = out;
+  }
+  return pts.map(([x, y]) => [Math.round(x), Math.round(y)]);
+}
+function makeStormBolt(s) {
+  const z = stormZone(s), mid = z.x + z.w / 2;
+  const x0 = mid + (Math.random() - 0.5) * z.w * 0.4, y0 = z.y + 10;
+  const x1 = mid + (Math.random() - 0.5) * Math.min(40, z.w * 0.6), y1 = s.plat.y;
+  const main = jagPath(x0, y0, x1, y1, (y1 - y0) * 0.5);
+  const forks = [];
+  for (let i = 2; i < main.length * 0.75 && forks.length < 4; i++) {
+    if (Math.random() > 0.12) continue;
+    const [fx, fy] = main[i], len = 12 + Math.random() * 24, dir = Math.random() < 0.5 ? -1 : 1;
+    forks.push(jagPath(fx, fy, fx + dir * len * (0.5 + Math.random() * 0.5), Math.min(y1 - 3, fy + len * 0.8), len * 0.4));
+  }
+  return { main, forks };
+}
+// Real strikes flicker: a few bright return strokes with dark gaps between them.
+const STROKES = [1, 1, 0.3, 0.05, 0.9, 0.7, 0.15, 0, 0, 0.85, 0.45, 0.1, 0, 0.6, 0.3, 0.1, 0.05];
+const strikeBrightness = t => (t < 0 ? 0 : STROKES[Math.floor(t / 0.025)] || 0);
+// Draws the first `frac` of a path once per [color, width] layer.
+function drawBoltPath(pts, cx, cy, frac, ...layers) {
+  const end = Math.min(pts.length, Math.max(1, Math.ceil(pts.length * frac)));
+  for (const [color, width] of layers) {
+    for (let i = 1; i < end; i++) drawLine(pts[i - 1][0] - cx, pts[i - 1][1] - cy, pts[i][0] - cx, pts[i][1] - cy, color, width);
+  }
+}
+
 function drawStorms(cx, cy, front) {
   const now = performance.now();
   for (const s of storms) {
@@ -4916,46 +6542,77 @@ function drawStorms(cx, cy, front) {
     if (sx > VIEW_W || sx + z.w < 0 || sy > VIEW_H || sy + z.h + 8 < 0) continue;
     if (!front) {
       // Warning glow on the platform while the cloud charges up.
-      if (!s.struck && Math.floor(age * 8) % 2 === 0) {
-        ctx.fillStyle = 'rgba(255, 246, 160, 0.18)';
+      if (!s.struck && (!flashesOn() || Math.floor(age * 8) % 2 === 0)) {
+        ctx.fillStyle = 'rgba(200, 190, 255, 0.16)';
         ctx.fillRect(sx, sy, z.w, z.h);
       }
       continue;
     }
-    const fade = s.struck ? Math.max(0, 1 - (age - STORM_DELAY) / 0.7) : Math.min(1, age * 4);
+    const t = age - STORM_DELAY;
+    if (!s.bolt && t > -LEADER_TIME - 0.05) s.bolt = makeStormBolt(s);
+    const simple = lowDetail(), steady = simple || !flashesOn();
+    const b = steady ? (t >= 0 && t < 0.3 ? 1 : 0) : strikeBrightness(t);
+    // The cloud flickers from inside while it charges, and lights up with each stroke.
+    if (!s.struck && age > 0.3 && Math.random() < 0.12) s.glow = 1;
+    s.glow = Math.max(b, (s.glow || 0) * 0.85);
+    const fade = s.struck ? Math.max(0, 1 - t / 0.7) : Math.min(1, age * 4);
     ctx.globalAlpha = fade;
     const scale = 2, cw = 18 * scale, n = Math.max(1, Math.round(z.w / (cw - 8)));
+    const lit = steady ? 0 : s.glow;
+    const cOut = mix('#141020', '#4a4470', lit), cTop = mix('#3a3650', '#d8d4ff', lit), cBody = mix('#26222f', '#8a84b8', lit);
     for (let k = 0; k < n; k++) {
       const ox = sx + Math.round((z.w - cw) * (n === 1 ? 0.5 : k / (n - 1))), oy = sy - 6 + (k % 2) * 3;
       CLOUD_ROWS.forEach((row, ry) => {
         for (let rx = 0; rx < row.length; rx++) {
           const ch = row[rx];
           if (ch === '.') continue;
-          ctx.fillStyle = ch === 'o' ? '#1c1a26' : ch === 'g' ? (s.struck ? '#6a6878' : '#4a4858') : '#33313f';
+          ctx.fillStyle = ch === 'o' ? cOut : ch === 'g' ? cTop : cBody;
           ctx.fillRect(ox + rx * scale, oy + ry * scale, scale, scale);
         }
       });
     }
-    if (!s.struck && Math.random() < 0.35) {
-      ctx.fillStyle = '#fff6a0';
-      ctx.fillRect(sx + Math.random() * z.w, sy - 2 + Math.random() * 8, 2, 2);
-    }
-    if (s.bolt && age - STORM_DELAY < 0.4) {
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = 'rgba(255, 255, 220, 0.3)';
-      ctx.fillRect(sx, sy, z.w, z.h);
-      // Flickers off for a frame now and then, like real lightning.
-      if (Math.floor((age - STORM_DELAY) * 30) % 4 !== 2) {
-        let [px, py] = [z.x + z.w / 2, z.y + 8];
-        for (const [bx, by] of s.bolt) {
-          drawLine(px - cx, py - cy, bx - cx, by - cy, 'rgba(138, 216, 255, 0.6)', 9);
-          drawLine(px - cx, py - cy, bx - cx, by - cy, '#fff6a0', 5);
-          drawLine(px - cx, py - cy, bx - cx, by - cy, '#ffffff', 2);
-          px = bx; py = by;
-        }
-      }
-    }
     ctx.globalAlpha = 1;
+    if (!s.bolt) continue;
+    if (simple) {
+      const coarse = s.bolt.main.filter((_, i, a) => i % 4 === 0 || i === a.length - 1);
+      if (b > 0) drawBoltPath(coarse, cx, cy, 1, ['#fff27a', 3], ['#ffffff', 1]);
+      continue;
+    }
+    if (t < 0) {
+      // Stepped leader: faint branches creep down just before the strike.
+      const f = Math.max(0, 1 + t / LEADER_TIME);
+      ctx.globalAlpha = 0.35 + 0.3 * Math.random();
+      drawBoltPath(s.bolt.main, cx, cy, f, ['#8a7aff', 1]);
+      for (const fork of s.bolt.forks) drawBoltPath(fork, cx, cy, f * 1.3, ['#6a5ad8', 1]);
+      ctx.globalAlpha = 1;
+    } else if (b > 0) {
+      if (flashesOn()) {
+        const [ix, iy] = s.bolt.main[s.bolt.main.length - 1];
+        const g = ctx.createRadialGradient(ix - cx, iy - cy, 0, ix - cx, iy - cy, 70);
+        g.addColorStop(0, `rgba(220, 225, 255, ${(0.55 * b).toFixed(3)})`);
+        g.addColorStop(1, 'rgba(160, 140, 255, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(ix - cx - 70, iy - cy - 70, 140, 140);
+      }
+      ctx.globalAlpha = b;
+      for (const fork of s.bolt.forks) drawBoltPath(fork, cx, cy, 1, ['rgba(138, 120, 255, 0.45)', 3], ['#c8d0ff', 1]);
+      drawBoltPath(s.bolt.main, cx, cy, 1, ['rgba(138, 120, 255, 0.35)', 7], ['rgba(190, 200, 255, 0.8)', 3], ['#ffffff', 1]);
+      ctx.globalAlpha = 1;
+    } else if (t < 0.7) {
+      // Afterglow on the channel and a scorch mark where it hit.
+      const a = 1 - t / 0.7;
+      ctx.globalAlpha = 0.4 * a;
+      drawBoltPath(s.bolt.main, cx, cy, 1, ['#6a5ad8', 1]);
+      ctx.globalAlpha = a;
+      const [ix, iy] = s.bolt.main[s.bolt.main.length - 1];
+      ctx.fillStyle = '#140c1c';
+      ctx.fillRect(Math.round(ix - cx) - 5, Math.round(iy - cy), 11, 1);
+      ctx.fillRect(Math.round(ix - cx) - 3, Math.round(iy - cy) + 1, 7, 1);
+      ctx.fillStyle = '#ffb040';
+      if (Math.random() < 0.5) ctx.fillRect(Math.round(ix - cx) - 4 + Math.floor(Math.random() * 9), Math.round(iy - cy), 1, 1);
+      if (Math.random() < 0.15) particles.push({ x: ix + (Math.random() - 0.5) * 6, y: iy - 1, vx: (Math.random() - 0.5) * 6, vy: -14, life: 0.6, max: 0.6, color: '#4a4258', g: 0 });
+      ctx.globalAlpha = 1;
+    }
   }
 }
 
@@ -4981,13 +6638,34 @@ function drawIceBlock(x, y) {
 }
 
 function drawGame() {
-  const cx = Math.round(cam.x), cy = Math.round(cam.y);
-  drawBackground(ctx, cx, cy);
-  drawWorldImage(levelCanvas, 0, cx, cy);
-  if (biomeOpen) drawWorldImage(biomeCanvas, BIOME_TOP, cx, cy);
+  const jolt = performance.now() < shakeUntil ? 3 : 0;
+  const cx = Math.round(cam.x + (Math.random() - 0.5) * jolt), cy = Math.round(cam.y + (Math.random() - 0.5) * jolt);
+  const under = inUnder(cy + VIEW_H / 2);
+  if (under && lowDetail()) {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    drawWorldImage(ugFlatCanvas, UG_TOP, cx, cy);
+  } else if (under) {
+    drawCaveBackground(ctx, cx);
+    drawWorldImage(ugCanvas, UG_TOP, cx, cy);
+  }
+  if (under) {
+    drawRope(cx, cy);
+  } else {
+    drawBackground(ctx, cx, cy);
+    drawWorldImage(levelCanvas, 0, cx, cy);
+    drawRock(cx, cy);
+  }
+  if (biomeFade > 0 && !under) {
+    ctx.globalAlpha = biomeFade;
+    drawWorldImage(biomeCanvas, BIOME_TOP, cx, cy);
+    drawClouds(cx, cy);
+    ctx.globalAlpha = 1;
+  }
   drawFrost();
   drawMagmaGlow(cx, cy);
   drawHeat();
+  drawStormShade();
   drawBench(cx, cy);
   drawVault(cx, cy);
   drawBucketSpot(cx, cy);
@@ -4999,45 +6677,52 @@ function drawGame() {
   for (const r of remotes.values()) {
     if (r.dead || hiddenFromMe(r)) continue;
     const rch = r.ch >= 0 ? r.ch / 10 : -1;
-    drawPlayer(ctx, r.x - cx, r.y - cy, r.c, r.f, r.a, time, playerFx(r.c, r.flash, r.immune, r.punchT, r.w, r.ar, rch));
-    if (r.fr) drawIceBlock(r.x - cx, r.y - cy);
-    drawNameAndHp(r.n, r.x - cx, r.y - cy, '#ffffff', r.hp, r.maxHp || BASE_HP, r.rb);
-    drawChargeBar(r.x - cx, r.y - cy, rch);
-    if (r.lz) drawBeam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], cx, cy, r.w && ITEMS[r.w].flame);
+    const ry = r.y - cy + sinkAt(r.x, PLAYER_W, r.y + PLAYER_H);
+    drawPlayer(ctx, r.x - cx, ry, r.c, r.f, r.a, time, playerFx(r.c, r.flash, r.immune, r.punchT, r.to ? '' : r.w, r.ar, rch));
+    if (r.sn && Math.random() < 0.5) emit(r.x + Math.random() * PLAYER_W, r.y + Math.random() * PLAYER_H, 1, Math.random() < 0.5 ? '#fff6a0' : '#8ad8ff', 30, 0.2);
+    if (r.fr) drawIceBlock(r.x - cx, ry);
+    drawNameAndHp(r.n, r.x - cx, ry, '#ffffff', r.hp, r.maxHp || BASE_HP, r.rb);
+    drawChargeBar(r.x - cx, ry, rch);
+    if (r.lz) drawBeam(r.x + PLAYER_W / 2, r.y + 6, r.lz[0], r.lz[1], cx, cy, ITEMS[r.w]);
     if (r.bn) burnFx(r.x, r.y);
   }
   if (!me.dead) {
     const mch = me.charging ? me.chargeT / BOW_CHARGE_TIME : -1;
     const fx = playerFx(me.color, me.flash, immuneLeft() > 0, me.punchT,
-      heldKey(), armorList(), mch);
+      me.tridentOut && heldKey() === 'trident' ? '' : heldKey(), armorList(), mch);
     const inBush = myBush() >= 0;
+    const my = me.y - cy + sinkAt(me.x, PLAYER_W, me.y + PLAYER_H);
     if (inBush) ctx.globalAlpha = 0.6;
-    drawPlayer(ctx, me.x - cx, me.y - cy, me.color, me.facing, me.anim, time, fx);
+    drawPlayer(ctx, me.x - cx, my, me.color, me.facing, me.anim, time, fx);
     ctx.globalAlpha = 1;
-    if (performance.now() < me.frozenUntil) drawIceBlock(me.x - cx, me.y - cy);
-    drawNameAndHp(me.name, me.x - cx, me.y - cy, '#ffe66d', me.hp, me.maxHp, radarActive() || inBush);
+    if (performance.now() < me.frozenUntil) drawIceBlock(me.x - cx, my);
+    drawNameAndHp(me.name, me.x - cx, my, '#ffe66d', me.hp, me.maxHp, radarActive() || inBush);
     if (performance.now() < me.stunUntil && Math.random() < 0.5) {
       emit(me.x + Math.random() * PLAYER_W, me.y + Math.random() * PLAYER_H, 1, Math.random() < 0.5 ? '#fff6a0' : '#8ad8ff', 30, 0.2);
     }
     if (burning()) burnFx(me.x, me.y);
     if (heldItem().kind === 'laser') {
       const out = me.laserOut > 0;
-      drawChargeBar(me.x - cx, me.y - cy, out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / fuelMax(heldItem()), out ? '#7a3a3a' : '#ff5a4a');
+      drawChargeBar(me.x - cx, my, out ? 1 - me.laserOut / LASER_EMPTY_COOLDOWN : me.fuel / fuelMax(heldItem()), out ? '#7a3a3a' : '#ff5a4a');
     } else if (heldItem().cooldown >= 1 && me.punchCd > 0) {
-      drawChargeBar(me.x - cx, me.y - cy, 1 - me.punchCd / heldItem().cooldown, '#8a8a98');
+      drawChargeBar(me.x - cx, my, 1 - me.punchCd / heldItem().cooldown, '#8a8a98');
     } else {
-      drawChargeBar(me.x - cx, me.y - cy, mch);
+      drawChargeBar(me.x - cx, my, mch);
     }
-    if (me.beam) drawBeam(me.beam.x1, me.beam.y1, me.beam.x2, me.beam.y2, cx, cy, heldItem().flame);
+    if (me.beam) drawBeam(me.beam.x1, me.beam.y1, me.beam.x2, me.beam.y2, cx, cy, heldItem());
   }
   drawBushes(cx, cy);
   drawStorms(cx, cy, true);
   drawArrows(cx, cy);
+  drawBlasts(cx, cy);
+  if (under) drawLava(cx, cy);
   drawParticles(ctx, cx, cy);
   drawSnow(cx, cy);
   drawFireRain(cx, cy);
+  drawStormFront(cx, cy);
+  if (under) drawDarkness(cx, cy);
   drawDamageNumbers(cx, cy);
-  if (skyFlash > 0) {
+  if (skyFlash > 0 && flashesOn()) {
     ctx.fillStyle = `rgba(255, 252, 230, ${Math.min(0.6, skyFlash)})`;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
@@ -5051,8 +6736,1030 @@ function drawGame() {
     if (craftOpen) drawCraftPanel();
     if (storageOpen) drawStoragePanel();
     if (adminOpen) drawAdminPanel();
+    if (settingsOpen) drawSettingsPanel();
     drawToast();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Music (procedural, Web Audio)
+// ---------------------------------------------------------------------------
+const MUSIC_VOL = 0.55;
+const MUSIC_FADE = 0.9;
+const SFX_VOL = 0.8;
+let actx = null, musicBus = null, sfxBus = null, reverb = null, noiseBuf = null;
+// Volumes run 0..VOL_MAX where 100 is the normal mix.
+const VOL_MAX = 200;
+const settings = { music: 100, sfx: 100, wind: true, rain: true, thunder: true, mining: true, lowDetail: false, flashes: true, saved: null };
+let soundMuted = false;
+const clampVol = v => Math.max(0, Math.min(VOL_MAX, Math.round(v)));
+try {
+  soundMuted = localStorage.getItem('combat.sound') === 'off';
+  const s = JSON.parse(localStorage.getItem('combat.settings') || '{}');
+  for (const k of ['music', 'sfx']) if (Number.isFinite(s[k])) settings[k] = clampVol(s[k]);
+  for (const k of ['wind', 'rain', 'thunder', 'mining', 'lowDetail', 'flashes']) if (typeof s[k] === 'boolean') settings[k] = s[k];
+  if (s.saved && Number.isFinite(s.saved.music) && Number.isFinite(s.saved.sfx)) {
+    settings.saved = { music: clampVol(s.saved.music), sfx: clampVol(s.saved.sfx) };
+  }
+} catch (e) { /* storage unavailable or bad save */ }
+function saveSettings() {
+  try {
+    localStorage.setItem('combat.settings', JSON.stringify(settings));
+  } catch (e) { /* storage unavailable */ }
+}
+const lowDetail = () => settings.lowDetail;
+const flashesOn = () => settings.flashes;
+const musicLevel = () => (soundMuted ? 0 : MUSIC_VOL * settings.music / 100);
+let musicRegionNow = null;
+const tracks = {};
+const mtof = m => 440 * 2 ** ((m - 69) / 12);
+
+function voice(dest, t, f, { type = 'sine', vol = 0.1, a = 0.005, d = 0.3, cut = 0, q = 0.7, detune = 0, bend = 0 } = {}) {
+  const o = actx.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(f, t);
+  if (bend) o.frequency.exponentialRampToValueAtTime(f * bend, t + a + d);
+  if (detune) o.detune.value = detune;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + a);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
+  let n = o;
+  if (cut) {
+    const fl = actx.createBiquadFilter();
+    fl.type = 'lowpass';
+    fl.frequency.value = cut;
+    fl.Q.value = q;
+    n = o.connect(fl);
+  }
+  n.connect(g).connect(dest);
+  o.start(t);
+  o.stop(t + a + d + 0.05);
+}
+
+function noiseHit(dest, t, { vol = 0.1, a = 0.002, d = 0.05, type = 'highpass', f = 7000, q = 0.7, to = 0 } = {}) {
+  const s = actx.createBufferSource();
+  s.buffer = noiseBuf;
+  const fl = actx.createBiquadFilter();
+  fl.type = type;
+  fl.frequency.setValueAtTime(f, t);
+  if (to) fl.frequency.exponentialRampToValueAtTime(to, t + d);
+  fl.Q.value = q;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + a);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
+  s.connect(fl).connect(g).connect(dest);
+  s.start(t, Math.random() * Math.max(0, 3.9 - a - d));
+  s.stop(t + a + d + 0.05);
+}
+
+const kick = (o, t, vol) => voice(o, t, 140, { vol, d: 0.28, bend: 0.28 });
+const tom = (o, t, f, vol) => {
+  voice(o, t, f, { vol, d: 0.7, bend: 0.65 });
+  noiseHit(o, t, { vol: vol * 0.35, d: 0.12, type: 'lowpass', f: 900 });
+};
+const snare = (o, t, vol) => {
+  noiseHit(o, t, { vol, d: 0.18, type: 'bandpass', f: 1800, q: 0.8 });
+  voice(o, t, 190, { type: 'triangle', vol: vol * 0.5, d: 0.08 });
+};
+const bell = (o, t, m, vol, d = 1.2, beat = 0) => {
+  const f = mtof(m);
+  voice(o, t, f, { vol, d });
+  voice(o, t, f * 3, { vol: vol * 0.22, d: d * 0.35 });
+  if (beat) voice(o, t, f * beat, { vol: vol * 0.7, d });
+};
+// counts the held steps after a melody note (0 = hold)
+const holdLen = (mel, idx, max) => {
+  let n = 1;
+  while (n < max && mel[(idx + n) % mel.length] === 0) n++;
+  return n;
+};
+
+// Layers 1-2: bright and bouncy, C major
+const HAPPY_CH = [[48, 0], [43, 0], [45, 1], [41, 0], [48, 0], [43, 0], [41, 0], [43, 0]];
+const HAPPY_MEL = [
+  76, 0, 79, 76, 72, 0, 74, 76,
+  74, 0, 71, 74, 79, 0, 77, 74,
+  72, 0, 76, 72, 69, 0, 72, 76,
+  77, 76, 74, 72, 74, 0, 0, 0,
+  76, 79, 84, 79, 76, 0, 72, 0,
+  74, 79, 83, 79, 74, 0, 71, 0,
+  72, 74, 77, 81, 79, 77, 76, 74,
+  74, 0, 79, 0, 71, 74, 72, 0,
+];
+// Layer 3: a minor-key music-box waltz with chromatic slips
+const QUIRKY_CH = [[45, [0, 3, 7]], [40, [0, 4, 7, 10]], [45, [0, 3, 7]], [38, [0, 3, 7]], [41, [0, 4, 7]], [40, [0, 4, 7, 10]], [45, [0, 3, 7]], [40, [0, 4, 7]]];
+const QUIRKY_MEL = [
+  76, 0, 75, 76, 81, 0,
+  80, 0, 79, 80, 83, 0,
+  84, 0, 83, 81, 76, 0,
+  77, 0, 76, 77, 81, 0,
+  81, 80, 81, 84, 77, 0,
+  76, 75, 76, 80, 74, 0,
+  72, 76, 81, 75, 76, 0,
+  71, 0, 68, 0, 64, 0,
+];
+// Layer 4: a galloping E minor 6/8 jig on icy bells
+const SNOW_CH = [[40, [0, 3, 7]], [36, [0, 4, 7]], [43, [0, 4, 7]], [38, [0, 4, 7]], [40, [0, 3, 7]], [36, [0, 4, 7]], [45, [0, 3, 7]], [47, [0, 4, 7]]];
+const SNOW_MEL = [
+  83, 0, 79, 76, 79, 83,
+  84, 0, 83, 79, 0, 76,
+  79, 81, 83, 86, 0, 83,
+  81, 0, 78, 74, 78, 81,
+  83, 0, 79, 76, 79, 83,
+  88, 0, 86, 84, 83, 79,
+  81, 84, 81, 76, 0, 75,
+  78, 0, 75, 71, 0, 0,
+];
+// Thunder biome: a bouncy G minor march with offbeat stabs
+const STORM_CH = [[43, [0, 3, 7]], [39, [0, 4, 7]], [36, [0, 3, 7]], [38, [0, 4, 7, 10]], [43, [0, 3, 7]], [39, [0, 4, 7]], [36, [0, 3, 7]], [38, [0, 4, 7]]];
+const STORM_MEL = [
+  79, 0, 74, 79, 82, 81, 79, 0,
+  75, 0, 79, 82, 87, 0, 86, 84,
+  84, 0, 79, 75, 72, 75, 79, 84,
+  81, 0, 78, 81, 84, 0, 82, 81,
+  79, 0, 74, 79, 82, 81, 79, 74,
+  75, 79, 82, 87, 86, 0, 82, 79,
+  84, 82, 81, 79, 78, 79, 81, 82,
+  81, 0, 78, 0, 74, 0, 0, 0,
+];
+// Layer 5: epic D minor march
+const VOLC_CH = [[38, 0], [34, 1], [36, 1], [33, 1]];
+const VOLC_MEL = [
+  74, 0, 0, 77, 81, 0, 79, 77, 79, 0, 0, 77, 76, 0, 74, 0,
+  77, 0, 0, 82, 81, 0, 79, 77, 79, 0, 0, 81, 82, 0, 84, 0,
+  84, 0, 0, 79, 88, 0, 86, 84, 86, 0, 84, 82, 81, 0, 79, 0,
+  81, 0, 0, 85, 88, 0, 85, 81, 85, 0, 0, 0, 88, 0, 0, 0,
+];
+// Underground: a slow, echoing D minor crawl with a heartbeat, dripping water and a Phrygian slip
+const CAVE_CH = [[38, [0, 3, 7]], [34, [0, 4, 7]], [36, [0, 4, 7]], [33, [0, 3, 7]]];
+const CAVE_MEL = [
+  74, 0, 0, 0, 77, 0, 75, 0,
+  74, 0, 0, 0, 0, 0, 0, 0,
+  70, 0, 0, 0, 74, 0, 72, 0,
+  70, 0, 69, 0, 0, 0, 0, 0,
+  72, 0, 0, 0, 76, 0, 79, 0,
+  77, 0, 76, 0, 72, 0, 0, 0,
+  69, 0, 72, 0, 75, 0, 74, 0,
+  74, 0, 0, 0, 0, 0, 0, 0,
+];
+const MUSIC_TRACKS = {
+  cave: {
+    bpm: 76, spb: 4, level: 2, verb: 0.6,
+    play(o, step, t, sd) {
+      const s = step % 128, bar = s >> 4, i = s & 15;
+      const [root, iv] = CAVE_CH[bar >> 1];
+      if (i === 0) {
+        voice(o, t, mtof(root), { type: 'sawtooth', vol: 0.06, a: 0.5, d: sd * 15, cut: 380 });
+        voice(o, t, mtof(root + 7), { type: 'triangle', vol: 0.07, a: 0.5, d: sd * 15 });
+        if (bar % 2 === 0) voice(o, t, mtof(root + 25), { vol: 0.012, a: 1, d: sd * 14, detune: -20 });
+      }
+      if (i === 0 || i === 8) voice(o, t, 58, { vol: 0.32, d: 0.22, bend: 0.6 });
+      if (i === 1 || i === 9) voice(o, t, 52, { vol: 0.2, d: 0.2, bend: 0.6 });
+      if (i % 4 === 2) voice(o, t, mtof(root + 24 + iv[(i >> 2) % iv.length]), { type: 'triangle', vol: 0.035, d: sd * 3, cut: 1400 });
+      if (i % 2 === 0) {
+        const m = CAVE_MEL[bar * 8 + i / 2];
+        if (m) bell(o, t, m, 0.05, 1.8);
+      }
+      if (Math.random() < 0.07) voice(o, t + Math.random() * sd, 1100 + Math.random() * 1700, { vol: 0.03, d: 0.07, bend: 1.7 });
+      if (i === 12 && bar % 4 === 3) noiseHit(o, t, { vol: 0.05, a: 0.3, d: 0.8, type: 'lowpass', f: 300 });
+    },
+  },
+  happy: {
+    bpm: 124, spb: 4, level: 2, verb: 0.18,
+    play(o, step, t, sd) {
+      const s = step % 128, bar = s >> 4, i = s & 15;
+      const [root, minor] = HAPPY_CH[bar];
+      const third = minor ? 3 : 4;
+      if (i % 2 === 0) {
+        const idx = bar * 8 + i / 2, m = HAPPY_MEL[idx];
+        if (m) voice(o, t, mtof(m), { type: 'square', vol: 0.06, d: sd * 2 * holdLen(HAPPY_MEL, idx, 3) * 0.8, cut: 2600 });
+      }
+      if (i % 4 === 0) voice(o, t, mtof(root + [0, 7, 12, 7][i / 4]), { type: 'triangle', vol: 0.22, d: sd * 1.8 });
+      voice(o, t, mtof(root + 24 + [0, third, 7, 12][i % 4]), { type: 'triangle', vol: 0.028, d: sd * 1.1 });
+      if (i === 0 || i === 8) kick(o, t, 0.32);
+      if (i === 4 || i === 12) noiseHit(o, t, { vol: 0.1, d: 0.07, type: 'bandpass', f: 1500, q: 1.2 });
+      if (i % 4 === 2) noiseHit(o, t, { vol: 0.04, d: 0.03, f: 8000 });
+    },
+  },
+  quirky: {
+    bpm: 160, spb: 2, level: 1.8, verb: 0.3,
+    play(o, step, t, sd) {
+      const s = step % 48, bar = (s / 6) | 0, i = s % 6;
+      const [root, iv] = QUIRKY_CH[bar];
+      if (i === 0) {
+        voice(o, t, mtof(root), { type: 'triangle', vol: 0.24, d: sd * 1.8 });
+        noiseHit(o, t, { vol: 0.035, d: 0.04, type: 'bandpass', f: 2500, q: 3 });
+      }
+      if (i === 2 || i === 4) for (const k of iv) voice(o, t, mtof(root + 12 + k), { type: 'triangle', vol: 0.04, d: sd * 0.45, cut: 1800 });
+      const m = QUIRKY_MEL[s];
+      if (m) bell(o, t, m, 0.08, 0.9);
+      if (i === 3 && bar % 2 === 1) voice(o, t, mtof(root + 18), { vol: 0.03, a: 0.25, d: sd * 3, detune: -25 });
+    },
+  },
+  snow: {
+    bpm: 132, spb: 3, level: 1.8, verb: 0.35,
+    play(o, step, t, sd) {
+      const s = step % 96, bar = ((s / 6) | 0) % 8, i = s % 6;
+      const [root, iv] = SNOW_CH[bar];
+      if (i === 0 || i === 3) voice(o, t, mtof(root + (i ? 7 : 0)), { type: 'triangle', vol: 0.22, d: sd * 2 });
+      if (i === 2 || i === 5) for (const k of iv) voice(o, t, mtof(root + 12 + k), { type: 'triangle', vol: 0.035, d: sd * 0.5, cut: 1800 });
+      if ([0, 2, 3, 5].includes(i)) voice(o, t, mtof(root + 12), { type: 'sawtooth', vol: 0.045, d: sd * 0.8, cut: 600 });
+      const m = SNOW_MEL[s % 48];
+      if (m) {
+        bell(o, t, m, 0.08, 0.8);
+        if (s >= 48) voice(o, t, mtof(m + 12), { vol: 0.02, d: 0.5 });
+      }
+      if (i === 0 && bar % 2 === 0) for (const k of [0, 7, 12]) voice(o, t, mtof(root + 24 + k), { type: 'sawtooth', vol: 0.018, a: 0.03, d: sd * 5, cut: 1500 });
+      if (i === 0) kick(o, t, 0.32);
+      if (i === 3) snare(o, t, 0.12);
+      noiseHit(o, t, { vol: i % 3 === 0 ? 0.035 : 0.018, d: 0.04, f: 7000 });
+      if (bar === 7 && i >= 3) tom(o, t, [130, 110, 90][i - 3], 0.2);
+    },
+  },
+  volcano: {
+    bpm: 168, spb: 4, level: 2, verb: 0.18,
+    play(o, step, t, sd) {
+      const s = step % 128, bar = s >> 4, i = s & 15;
+      const [root, major] = VOLC_CH[bar >> 1];
+      const third = major ? 4 : 3;
+      voice(o, t, mtof(root + (i % 4 === 2 ? 24 : 12)), { type: 'sawtooth', vol: 0.11, d: sd * 0.8, cut: 800 });
+      if (i === 0) {
+        for (const k of [0, 7, 12]) for (const dt of [-8, 8]) {
+          voice(o, t, mtof(root + 24 + k), { type: 'sawtooth', vol: 0.03, a: 0.03, d: sd * 15, cut: 1700, detune: dt });
+        }
+        if (bar % 2 === 0) noiseHit(o, t, { vol: 0.12, d: 1.2, f: 5000 });
+      }
+      if (i === 6 || i === 10) {
+        for (const k of [0, 7, 12]) voice(o, t, mtof(root + 24 + k), { type: 'sawtooth', vol: 0.05, d: sd * 1.2, cut: 2200 });
+      }
+      voice(o, t, mtof(root + 36 + [0, 7, 12, third + 12][i % 4]), { type: 'square', vol: 0.018, d: sd * 0.7, cut: 3500 });
+      if (i % 2 === 0) {
+        const idx = (bar >> 1) * 16 + (bar & 1) * 8 + i / 2, m = VOLC_MEL[idx];
+        if (m) {
+          const d = sd * 2 * holdLen(VOLC_MEL, idx, 4) * 0.9;
+          for (const dt of [-7, 7]) voice(o, t, mtof(m), { type: 'sawtooth', vol: 0.045, a: 0.015, d, cut: 3000, detune: dt });
+        }
+      }
+      if ([0, 3, 6, 8, 11].includes(i)) kick(o, t, 0.5);
+      if (i === 4 || i === 12) snare(o, t, 0.24);
+      if (bar % 2 === 1 && i === 15) snare(o, t, 0.1);
+      noiseHit(o, t, { vol: i % 4 === 2 ? 0.04 : 0.018, d: i % 4 === 2 ? 0.08 : 0.02, f: 9000 });
+      if (bar % 4 === 3 && i >= 12) tom(o, t, [140, 120, 100, 85][i - 12], 0.28);
+      if (bar === 7 && i >= 8 && i < 12) snare(o, t, 0.08 + (i - 8) * 0.04);
+    },
+  },
+  thunder: {
+    bpm: 150, spb: 4, level: 1.8, verb: 0.3,
+    play(o, step, t, sd) {
+      const s = step % 128, bar = s >> 4, i = s & 15;
+      const [root, iv] = STORM_CH[bar];
+      if (i % 4 === 0) voice(o, t, mtof(root + [0, 7, 12, 7][i / 4]), { type: 'triangle', vol: 0.22, d: sd * 2.5 });
+      if (i % 2 === 0) voice(o, t, mtof(root + 12), { type: 'sawtooth', vol: 0.04, d: sd * 1.2, cut: 600 });
+      if (i % 4 === 2) for (const k of iv) voice(o, t, mtof(root + 24 + k), { type: 'square', vol: 0.022, d: sd * 0.6, cut: 1800 });
+      if (i % 2 === 0) {
+        const idx = bar * 8 + i / 2, m = STORM_MEL[idx];
+        if (m) {
+          voice(o, t, mtof(m), { type: 'square', vol: 0.05, d: sd * 2 * holdLen(STORM_MEL, idx, 3) * 0.8, cut: 2200 });
+          bell(o, t, m + 12, 0.025, 0.4);
+        }
+      }
+      if (i === 0 && bar % 4 === 0) noiseHit(o, t, { vol: 0.08, d: 1, f: 5000 });
+      if (i === 0 || i === 8 || (bar % 2 === 1 && i === 10)) kick(o, t, 0.38);
+      if (i === 4 || i === 12) snare(o, t, 0.16);
+      if (i % 2 === 0) noiseHit(o, t, { vol: i % 4 === 2 ? 0.035 : 0.02, d: 0.03, f: 8500 });
+      if (bar % 4 === 3 && i >= 12) tom(o, t, [140, 120, 100, 85][i - 12], 0.22);
+    },
+  },
+  wind: {
+    level: 0.42, verb: 0,
+    build(tr) {
+      const src = loopNoise();
+      tr.bp = actx.createBiquadFilter();
+      tr.bp.type = 'bandpass';
+      tr.bp.frequency.value = 500;
+      tr.bp.Q.value = 1.2;
+      tr.whistle = actx.createBiquadFilter();
+      tr.whistle.type = 'bandpass';
+      tr.whistle.frequency.value = 1100;
+      tr.whistle.Q.value = 14;
+      const wg = actx.createGain();
+      wg.gain.value = 0.35;
+      tr.gust = actx.createGain();
+      tr.gust.gain.value = 0.7;
+      src.connect(tr.bp).connect(tr.gust);
+      src.connect(tr.whistle).connect(wg).connect(tr.gust);
+      tr.gust.connect(tr.out);
+      const low = actx.createBiquadFilter();
+      low.type = 'lowpass';
+      low.frequency.value = 180;
+      const lg = actx.createGain();
+      lg.gain.value = 0.6;
+      loopNoise().connect(low).connect(lg).connect(tr.out);
+      tr.nextGust = 0;
+    },
+    tick(tr, now) {
+      if (now < tr.nextGust) return;
+      tr.nextGust = now + 1 + Math.random() * 2.5;
+      const f = 250 + Math.random() * 700;
+      tr.gust.gain.setTargetAtTime(0.45 + Math.random() * 0.9, now, 0.6);
+      tr.bp.frequency.setTargetAtTime(f, now, 0.8);
+      tr.whistle.frequency.setTargetAtTime(f * 2.2, now, 0.8);
+    },
+  },
+  rain: {
+    level: 0.25, verb: 0.1,
+    build(tr) {
+      const hi = actx.createBiquadFilter();
+      hi.type = 'highpass';
+      hi.frequency.value = 900;
+      const hg = actx.createGain();
+      hg.gain.value = 0.32;
+      loopNoise().connect(hi).connect(hg).connect(tr.out);
+      const body = actx.createBiquadFilter();
+      body.type = 'lowpass';
+      body.frequency.value = 450;
+      const bg = actx.createGain();
+      bg.gain.value = 0.45;
+      loopNoise().connect(body).connect(bg).connect(tr.out);
+    },
+    tick(tr, now) {
+      for (let k = 0; k < 3; k++) {
+        const t = now + 0.05 + Math.random() * 0.05;
+        if (Math.random() < 0.6) voice(tr.out, t, 1500 + Math.random() * 3500, { vol: 0.012 + Math.random() * 0.02, a: 0.001, d: 0.03 });
+        else noiseHit(tr.out, t, { vol: 0.05, d: 0.02, type: 'bandpass', f: 3000 + Math.random() * 3000, q: 4 });
+      }
+    },
+  },
+};
+
+const MUSIC_MIX = {
+  menu: { happy: 0.55 },
+  happy: { happy: 1 },
+  quirky: { quirky: 1 },
+  snow: { wind: 1, snow: 1 },
+  volcano: { volcano: 1 },
+  thunder: { rain: 1, thunder: 1 },
+  cave: { cave: 1 },
+};
+
+function loopNoise() {
+  const s = actx.createBufferSource();
+  s.buffer = noiseBuf;
+  s.loop = true;
+  s.start(0, Math.random() * 3);
+  return s;
+}
+
+function initAudio() {
+  if (actx) {
+    if (actx.state === 'suspended') actx.resume();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  actx = new AC();
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -14;
+  comp.ratio.value = 4;
+  comp.connect(actx.destination);
+  musicBus = actx.createGain();
+  musicBus.gain.value = musicLevel();
+  musicBus.connect(comp);
+  sfxBus = actx.createGain();
+  sfxBus.gain.value = soundMuted ? 0 : SFX_VOL * settings.sfx / 100;
+  sfxBus.connect(comp);
+
+  const rate = actx.sampleRate;
+  noiseBuf = actx.createBuffer(1, rate * 4, rate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+
+  const ir = actx.createBuffer(2, rate * 2.5, rate);
+  for (let c = 0; c < 2; c++) {
+    const d = ir.getChannelData(c);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 3;
+  }
+  reverb = actx.createConvolver();
+  reverb.buffer = ir;
+  reverb.connect(musicBus);
+
+  for (const [id, def] of Object.entries(MUSIC_TRACKS)) {
+    const out = actx.createGain();
+    out.gain.value = 0;
+    out.connect(musicBus);
+    if (def.verb) {
+      const send = actx.createGain();
+      send.gain.value = def.verb;
+      out.connect(send).connect(reverb);
+    }
+    const tr = { id, def, out, target: 0, until: 0, running: false, step: 0, nextT: 0 };
+    if (def.build) def.build(tr);
+    tracks[id] = tr;
+  }
+  musicRegionNow = null;
+  buildLoops();
+  setInterval(musicTick, 50);
+}
+addEventListener('keydown', initAudio, true);
+addEventListener('pointerdown', initAudio, true);
+
+function musicTick() {
+  if (!actx || actx.state !== 'running' || soundMuted) return;
+  const now = actx.currentTime;
+  for (const tr of Object.values(tracks)) {
+    if (tr.target <= 0 && now >= tr.until) {
+      tr.running = false;
+      continue;
+    }
+    if (tr.def.tick) {
+      tr.def.tick(tr, now);
+      continue;
+    }
+    if (!tr.running) {
+      tr.running = true;
+      tr.step = 0;
+      tr.nextT = now + 0.06;
+    }
+    if (tr.nextT < now - 0.3) tr.nextT = now + 0.05;
+    const sd = 60 / tr.def.bpm / tr.def.spb;
+    while (tr.nextT < now + 0.25) {
+      tr.def.play(tr.out, tr.step, tr.nextT, sd);
+      tr.step++;
+      tr.nextT += sd;
+    }
+  }
+}
+
+function musicRegion() {
+  if (state !== 'game') return 'menu';
+  if (inUnder(me.dead ? cam.y + VIEW_H / 2 : me.y)) return 'cave';
+  const sec = sectionOf(me.dead ? cam.y + VIEW_H / 2 : me.y + PLAYER_H);
+  if (sec >= BIOME_SECTION) return biomeFade > 0.5 ? 'thunder' : 'volcano';
+  if (sec === VOLCANO_SECTION) return 'volcano';
+  if (sec === SNOW_SECTION) return 'snow';
+  if (sec === 2) return 'quirky';
+  return 'happy';
+}
+
+function updateMusic() {
+  if (!actx) return;
+  const region = musicRegion();
+  if (region === musicRegionNow) return;
+  musicRegionNow = region;
+  applySfxLevel();
+  const mix = MUSIC_MIX[region], now = actx.currentTime;
+  for (const tr of Object.values(tracks)) {
+    const off = (tr.id === 'wind' || tr.id === 'rain') && !settings[tr.id];
+    const target = off ? 0 : mix[tr.id] || 0;
+    if (target === tr.target) continue;
+    if (tr.target > 0 && target <= 0) tr.until = now + MUSIC_FADE * 6;
+    tr.target = target;
+    tr.out.gain.setTargetAtTime(target * tr.def.level, now, MUSIC_FADE);
+  }
+}
+
+function toggleSound() {
+  soundMuted = !soundMuted;
+  try {
+    localStorage.setItem('combat.sound', soundMuted ? 'off' : 'on');
+  } catch (e) { /* storage unavailable */ }
+  applyVolumes();
+  showToast(soundMuted ? 'SOUND OFF' : 'SOUND ON');
+}
+
+function applyVolumes() {
+  if (!musicBus) return;
+  musicBus.gain.setTargetAtTime(musicLevel(), actx.currentTime, 0.1);
+  applySfxLevel(0.1);
+}
+
+// ---------------------------------------------------------------------------
+// Sound effects
+// ---------------------------------------------------------------------------
+const SFX_RANGE = 420;
+const SFX_GAP = 0.035;
+const sfxLast = {};
+
+const SFX = {
+  chestHit(o, t) {
+    const p = 0.9 + Math.random() * 0.2;
+    noiseHit(o, t, { vol: 0.35, d: 0.08, type: 'lowpass', f: 900 });
+    voice(o, t, 170 * p, { type: 'triangle', vol: 0.3, d: 0.1, bend: 0.6 });
+    noiseHit(o, t, { vol: 0.08, d: 0.03, f: 3000 });
+  },
+  chestSilver(o, t) {
+    const p = 0.95 + Math.random() * 0.1;
+    voice(o, t, 620 * p, { type: 'square', vol: 0.07, d: 0.12, cut: 3000 });
+    voice(o, t, 1480 * p, { type: 'triangle', vol: 0.08, d: 0.35 });
+    voice(o, t, 2210 * p, { vol: 0.04, d: 0.25 });
+    noiseHit(o, t, { vol: 0.15, d: 0.04, type: 'bandpass', f: 3000, q: 1.5 });
+  },
+  chestStone(o, t) {
+    noiseHit(o, t, { vol: 0.4, d: 0.12, type: 'lowpass', f: 1200 });
+    noiseHit(o, t, { vol: 0.25, d: 0.08, type: 'bandpass', f: 800, q: 2 });
+    voice(o, t, 85 + Math.random() * 15, { vol: 0.35, d: 0.12, bend: 0.6 });
+    for (let k = 0; k < 3; k++) noiseHit(o, t + 0.03 + Math.random() * 0.08, { vol: 0.06, d: 0.02, type: 'bandpass', f: 2500, q: 3 });
+  },
+  chestIce(o, t) {
+    const p = 0.9 + Math.random() * 0.2;
+    voice(o, t, 2500 * p, { vol: 0.08, d: 0.18 });
+    voice(o, t, 3700 * p, { vol: 0.05, d: 0.12 });
+    noiseHit(o, t, { vol: 0.15, d: 0.06, f: 6000 });
+    noiseHit(o, t, { vol: 0.15, d: 0.05, type: 'lowpass', f: 1000 });
+  },
+  chestArmor(o, t) {
+    voice(o, t, 220, { type: 'square', vol: 0.09, d: 0.1, cut: 1500 });
+    voice(o, t, 900 + Math.random() * 80, { type: 'triangle', vol: 0.07, d: 0.25 });
+    noiseHit(o, t, { vol: 0.2, d: 0.05, type: 'bandpass', f: 1800, q: 1.2 });
+    voice(o, t, 110, { vol: 0.25, d: 0.1, bend: 0.6 });
+  },
+  chestMagma(o, t) {
+    noiseHit(o, t, { vol: 0.35, d: 0.1, type: 'lowpass', f: 900 });
+    voice(o, t, 75, { vol: 0.3, d: 0.15, bend: 0.6 });
+    noiseHit(o, t + 0.02, { vol: 0.12, a: 0.02, d: 0.35, f: 4500 });
+  },
+  chestThunder(o, t) {
+    noiseHit(o, t, { vol: 0.3, d: 0.08, type: 'lowpass', f: 1200 });
+    voice(o, t, 95, { vol: 0.25, d: 0.12, bend: 0.6 });
+    voice(o, t, 880, { type: 'sawtooth', vol: 0.07, d: 0.18, bend: 0.4, cut: 3500 });
+    voice(o, t, 1320, { type: 'square', vol: 0.04, d: 0.12, bend: 0.5, cut: 5000, detune: 15 });
+    for (let k = 0; k < 6; k++) noiseHit(o, t + 0.02 + Math.random() * 0.2, { vol: 0.1, d: 0.012, type: 'highpass', f: 5000 });
+  },
+  burn(o, t) {
+    noiseHit(o, t, { vol: 0.2, a: 0.01, d: 0.3, f: 3500 });
+    noiseHit(o, t, { vol: 0.25, d: 0.2, type: 'bandpass', f: 400, q: 1, to: 900 });
+    for (let k = 0; k < 4; k++) noiseHit(o, t + Math.random() * 0.25, { vol: 0.08, d: 0.015, f: 5000 });
+  },
+  mark(o, t) {
+    voice(o, t, 700, { type: 'square', vol: 0.05, d: 0.07, bend: 0.7, cut: 2500 });
+    noiseHit(o, t, { vol: 0.05, d: 0.02, f: 4000 });
+  },
+  unmark(o, t) {
+    voice(o, t, 500, { type: 'triangle', vol: 0.08, d: 0.07, bend: 1.4 });
+  },
+  delete(o, t) {
+    noiseHit(o, t, { vol: 0.3, d: 0.25, type: 'bandpass', f: 2500, q: 1, to: 400 });
+    voice(o, t, 400, { type: 'square', vol: 0.05, d: 0.2, bend: 0.3, cut: 1500 });
+    voice(o, t + 0.18, 90, { vol: 0.25, d: 0.1, bend: 0.6 });
+  },
+  adminGive(o, t) {
+    voice(o, t, 400, { vol: 0.08, d: 0.25, bend: 3 });
+    noiseHit(o, t, { vol: 0.1, a: 0.05, d: 0.2, f: 4000, to: 10000 });
+    [1568, 2093, 2637].forEach((f, k) => voice(o, t + 0.15 + k * 0.05, f, { vol: 0.05, d: 0.2 }));
+  },
+  store(o, t) {
+    voice(o, t, 260, { type: 'triangle', vol: 0.12, d: 0.08, bend: 0.7 });
+    noiseHit(o, t, { vol: 0.12, d: 0.05, type: 'lowpass', f: 1200 });
+    noiseHit(o, t + 0.05, { vol: 0.06, d: 0.015, f: 4000 });
+  },
+  select(o, t) {
+    voice(o, t, 900, { type: 'triangle', vol: 0.08, d: 0.05 });
+    voice(o, t + 0.04, 1350, { type: 'triangle', vol: 0.06, d: 0.06 });
+  },
+  splash(o, t) {
+    noiseHit(o, t, { vol: 0.35, a: 0.01, d: 0.45, type: 'bandpass', f: 1200, q: 0.8, to: 300 });
+    noiseHit(o, t, { vol: 0.15, d: 0.15, type: 'lowpass', f: 500 });
+    for (let k = 0; k < 6; k++) {
+      const f = 600 + Math.random() * 900;
+      voice(o, t + 0.1 + Math.random() * 0.4, f, { vol: 0.05, d: 0.06, bend: 1.8 });
+    }
+  },
+  snowFill(o, t) {
+    for (let k = 0; k < 4; k++) noiseHit(o, t + k * 0.05, { vol: 0.15, d: 0.04, type: 'bandpass', f: 1800 + k * 300, q: 1.5 });
+    voice(o, t, 140, { vol: 0.15, d: 0.1, bend: 0.7 });
+    voice(o, t + 0.22, 1760, { vol: 0.06, d: 0.3 });
+    voice(o, t + 0.28, 2349, { vol: 0.05, d: 0.35 });
+  },
+  melt(o, t) {
+    voice(o, t, 500, { vol: 0.12, d: 0.08, bend: 2.2 });
+    voice(o, t + 0.16, 650, { vol: 0.1, d: 0.08, bend: 2.2 });
+    noiseHit(o, t + 0.05, { vol: 0.08, a: 0.05, d: 0.4, type: 'bandpass', f: 1500, q: 2 });
+  },
+  glass(o, t) {
+    noiseHit(o, t, { vol: 0.5, d: 0.08, f: 2500 });
+    noiseHit(o, t, { vol: 0.25, d: 0.45, f: 5000 });
+    voice(o, t, 120, { vol: 0.3, d: 0.1, bend: 0.5 });
+    for (let k = 0; k < 14; k++) {
+      const f = 2200 + Math.random() * 4500;
+      voice(o, t + Math.random() * 0.45, f, { vol: 0.025 + Math.random() * 0.04, d: 0.05 + Math.random() * 0.15 });
+    }
+  },
+  chestBreak(o, t) {
+    noiseHit(o, t, { vol: 0.5, d: 0.35, type: 'bandpass', f: 1400, q: 0.7, to: 300 });
+    voice(o, t, 220, { type: 'square', vol: 0.12, d: 0.25, bend: 0.3, cut: 1200 });
+    voice(o, t, 90, { vol: 0.3, d: 0.3, bend: 0.5 });
+    [1320, 1760, 2093].forEach((f, k) => voice(o, t + 0.1 + k * 0.07, f, { vol: 0.06, d: 0.3 }));
+  },
+  hurt(o, t) {
+    voice(o, t, 320, { type: 'square', vol: 0.14, d: 0.14, bend: 0.45, cut: 1600 });
+    noiseHit(o, t, { vol: 0.25, d: 0.07, type: 'lowpass', f: 2200 });
+    voice(o, t, 110, { vol: 0.25, d: 0.12, bend: 0.6 });
+  },
+  open(o, t) {
+    noiseHit(o, t, { vol: 0.15, d: 0.02, f: 3000 });
+    voice(o, t + 0.02, 130, { type: 'sawtooth', vol: 0.06, a: 0.03, d: 0.16, bend: 1.5, cut: 700 });
+    noiseHit(o, t + 0.14, { vol: 0.2, d: 0.1, type: 'bandpass', f: 500, q: 1.5 });
+    voice(o, t + 0.14, 95, { vol: 0.2, d: 0.12, bend: 0.7 });
+  },
+  potion(o, t) {
+    for (let k = 0; k < 3; k++) {
+      voice(o, t + k * 0.13, 260 + k * 30, { vol: 0.22, a: 0.01, d: 0.09, bend: 1.8 });
+      noiseHit(o, t + k * 0.13, { vol: 0.08, d: 0.05, type: 'lowpass', f: 900 });
+    }
+    [76, 79, 83, 88, 91].forEach((m, k) => voice(o, t + 0.42 + k * 0.05, mtof(m), { type: 'triangle', vol: 0.08, d: 0.4 }));
+    noiseHit(o, t + 0.42, { vol: 0.06, a: 0.05, d: 0.5, type: 'highpass', f: 6000 });
+  },
+  craft(o, t) {
+    voice(o, t, 1250, { type: 'square', vol: 0.06, d: 0.08, cut: 4000 });
+    noiseHit(o, t, { vol: 0.12, d: 0.04, type: 'bandpass', f: 3000, q: 2 });
+    voice(o, t + 0.11, 1650, { type: 'square', vol: 0.06, d: 0.08, cut: 4000 });
+    noiseHit(o, t + 0.11, { vol: 0.12, d: 0.04, type: 'bandpass', f: 3500, q: 2 });
+    [72, 76, 79, 84].forEach((m, k) => voice(o, t + 0.24 + k * 0.07, mtof(m), { type: 'triangle', vol: 0.12, d: 0.25 }));
+  },
+  jump(o, t) {
+    voice(o, t, 210, { type: 'square', vol: 0.07, d: 0.1, bend: 2, cut: 2000 });
+  },
+  airJump(o, t) {
+    voice(o, t, 420, { type: 'triangle', vol: 0.12, d: 0.13, bend: 2 });
+    voice(o, t, 840, { vol: 0.04, d: 0.16, bend: 1.5 });
+    noiseHit(o, t, { vol: 0.07, d: 0.12, type: 'bandpass', f: 2000, q: 1, to: 6000 });
+  },
+  wallJump(o, t) {
+    noiseHit(o, t, { vol: 0.25, d: 0.05, type: 'lowpass', f: 800 });
+    voice(o, t, 140, { vol: 0.2, d: 0.06, bend: 0.6 });
+    voice(o, t + 0.02, 260, { type: 'square', vol: 0.07, d: 0.1, bend: 1.8, cut: 2000 });
+  },
+  dash(o, t) {
+    noiseHit(o, t, { vol: 0.35, d: 0.22, type: 'bandpass', f: 600, q: 1.5, to: 3500 });
+    voice(o, t, 300, { type: 'sawtooth', vol: 0.03, d: 0.15, bend: 2.5, cut: 2000 });
+  },
+  radarOn(o, t) {
+    voice(o, t, 300, { vol: 0.12, d: 0.35, bend: 4 });
+    voice(o, t, 302, { type: 'triangle', vol: 0.04, d: 0.35, bend: 4 });
+    voice(o, t + 0.36, 1200, { vol: 0.08, d: 0.08 });
+    voice(o, t + 0.46, 1600, { vol: 0.08, d: 0.12 });
+  },
+  radarOff(o, t) {
+    voice(o, t, 1600, { vol: 0.08, d: 0.08 });
+    voice(o, t + 0.08, 1200, { vol: 0.1, d: 0.4, bend: 0.25 });
+    voice(o, t + 0.08, 1203, { type: 'triangle', vol: 0.03, d: 0.4, bend: 0.25 });
+  },
+  slash(o, t) {
+    noiseHit(o, t, { vol: 0.35, d: 0.14, type: 'bandpass', f: 3000, q: 1.2, to: 700 });
+    voice(o, t, 1800, { type: 'triangle', vol: 0.025, d: 0.1, bend: 0.8 });
+  },
+  katana(o, t) {
+    noiseHit(o, t, { vol: 0.35, d: 0.1, type: 'bandpass', f: 5000, q: 1.5, to: 1400 });
+    voice(o, t, 2600, { vol: 0.045, d: 0.22, bend: 0.97 });
+  },
+  equip(o, t) {
+    voice(o, t, 1400, { type: 'triangle', vol: 0.07, d: 0.22, bend: 1.3 });
+    noiseHit(o, t, { vol: 0.1, d: 0.15, f: 5000, to: 9000 });
+  },
+  equipArmor(o, t) {
+    voice(o, t, 300, { type: 'square', vol: 0.09, d: 0.08, cut: 1200 });
+    noiseHit(o, t, { vol: 0.15, d: 0.06, type: 'bandpass', f: 2500, q: 1.5 });
+    voice(o, t + 0.07, 450, { type: 'square', vol: 0.07, d: 0.1, cut: 1400 });
+    noiseHit(o, t + 0.07, { vol: 0.12, d: 0.06, type: 'bandpass', f: 3200, q: 1.5 });
+  },
+  legendary(o, t) {
+    [72, 76, 79, 84, 88].forEach((m, k) => {
+      voice(o, t + k * 0.06, mtof(m), { type: 'triangle', vol: 0.12, d: 0.35 });
+      voice(o, t + k * 0.06, mtof(m + 12), { vol: 0.04, d: 0.3 });
+    });
+    noiseHit(o, t + 0.25, { vol: 0.08, a: 0.1, d: 0.4, f: 6000, to: 12000 });
+    for (const m of [72, 76, 79]) voice(o, t + 0.32, mtof(m + 12), { type: 'triangle', vol: 0.05, d: 0.7 });
+  },
+  mythic(o, t) {
+    voice(o, t, 70, { vol: 0.4, d: 0.6, bend: 0.5 });
+    noiseHit(o, t, { vol: 0.2, a: 0.25, d: 0.15, type: 'bandpass', f: 400, q: 1, to: 5000 });
+    [69, 73, 76, 81, 85, 88, 93].forEach((m, k) => {
+      voice(o, t + 0.3 + k * 0.05, mtof(m), { type: 'square', vol: 0.05, d: 0.25, cut: 4000 });
+      voice(o, t + 0.3 + k * 0.05, mtof(m + 12), { vol: 0.05, d: 0.3 });
+    });
+    for (const m of [57, 64, 69, 73, 76]) {
+      for (const dt of [-10, 10]) voice(o, t + 0.68, mtof(m), { type: 'sawtooth', vol: 0.025, a: 0.02, d: 1.1, cut: 2500, detune: dt });
+    }
+    voice(o, t + 0.68, 55, { vol: 0.35, d: 0.8, bend: 0.6 });
+    noiseHit(o, t + 0.68, { vol: 0.15, d: 1, f: 6000 });
+    [2637, 3136, 3520, 4186].forEach((f, k) => voice(o, t + 0.8 + k * 0.09, f, { vol: 0.035, d: 0.25 }));
+  },
+  fireball(o, t) {
+    noiseHit(o, t, { vol: 0.45, d: 0.3, type: 'bandpass', f: 300, q: 1, to: 1400 });
+    voice(o, t, 130, { vol: 0.3, d: 0.25, bend: 0.45 });
+    for (let k = 0; k < 4; k++) noiseHit(o, t + 0.04 + k * 0.05, { vol: 0.08, d: 0.02, f: 3000 + k * 800 });
+  },
+  laserStart(o, t) {
+    voice(o, t, 1800, { type: 'square', vol: 0.07, d: 0.12, bend: 0.3, cut: 5000 });
+    voice(o, t, 900, { type: 'sawtooth', vol: 0.05, d: 0.1, bend: 0.5, cut: 3000 });
+  },
+  flameStart(o, t) {
+    noiseHit(o, t, { vol: 0.4, d: 0.25, type: 'bandpass', f: 250, q: 0.8, to: 1500 });
+    noiseHit(o, t, { vol: 0.1, d: 0.03, f: 4000 });
+  },
+  refuelFull(o, t) {
+    voice(o, t, 1046, { type: 'triangle', vol: 0.09, d: 0.12 });
+    voice(o, t + 0.08, 1568, { type: 'triangle', vol: 0.09, d: 0.25 });
+  },
+  punchHit(o, t) {
+    voice(o, t, 160, { vol: 0.4, d: 0.1, bend: 0.5 });
+    noiseHit(o, t, { vol: 0.3, d: 0.05, type: 'lowpass', f: 1500 });
+  },
+  gauntletHit(o, t) {
+    voice(o, t, 120, { vol: 0.45, d: 0.14, bend: 0.5 });
+    noiseHit(o, t, { vol: 0.35, d: 0.06, type: 'lowpass', f: 1800 });
+    voice(o, t, 520, { type: 'square', vol: 0.06, d: 0.12, cut: 2500 });
+    voice(o, t, 1380, { type: 'triangle', vol: 0.05, d: 0.2 });
+  },
+  thunder(o, t) {
+    noiseHit(o, t, { vol: 0.9, d: 0.18, f: 1500 });
+    noiseHit(o, t, { vol: 1, d: 1.4, type: 'lowpass', f: 900, to: 120 });
+    voice(o, t, 55, { vol: 0.6, d: 1, bend: 0.6 });
+    for (let k = 0; k < 4; k++) {
+      noiseHit(o, t + 0.3 + k * 0.35 + Math.random() * 0.15, { vol: 0.5 - k * 0.08, a: 0.05, d: 0.7, type: 'lowpass', f: 260 });
+    }
+  },
+  thunderFar(o, t) {
+    noiseHit(o, t, { vol: 0.35, a: 0.15, d: 1.6, type: 'lowpass', f: 380, to: 140 });
+    voice(o, t, 48, { vol: 0.2, a: 0.1, d: 1.2, bend: 0.8 });
+    noiseHit(o, t + 0.5 + Math.random() * 0.3, { vol: 0.25, a: 0.1, d: 1, type: 'lowpass', f: 220 });
+  },
+  chargeReady(o, t) {
+    voice(o, t, 1568, { vol: 0.09, d: 0.3 });
+    voice(o, t + 0.05, 2093, { vol: 0.06, d: 0.3 });
+  },
+  arrow(o, t) {
+    voice(o, t, 190, { type: 'triangle', vol: 0.2, d: 0.14, bend: 0.7 });
+    voice(o, t, 95, { type: 'sawtooth', vol: 0.04, d: 0.1, cut: 900 });
+    noiseHit(o, t + 0.01, { vol: 0.15, d: 0.16, type: 'bandpass', f: 2200, q: 1.2, to: 700 });
+  },
+  arrowCharged(o, t) {
+    voice(o, t, 240, { type: 'triangle', vol: 0.24, d: 0.16, bend: 0.65 });
+    noiseHit(o, t + 0.01, { vol: 0.25, d: 0.22, type: 'bandpass', f: 4000, q: 1, to: 900 });
+    voice(o, t, 1200, { vol: 0.04, d: 0.2, bend: 0.5 });
+  },
+  rockBreak(o, t) {
+    noiseHit(o, t, { vol: 0.8, d: 0.6, type: 'lowpass', f: 1800, to: 200 });
+    noiseHit(o, t, { vol: 0.4, d: 0.12, f: 3000 });
+    voice(o, t, 75, { vol: 0.55, d: 0.7, bend: 0.4 });
+    for (let k = 0; k < 12; k++) noiseHit(o, t + 0.05 + Math.random() * 0.7, { vol: 0.12, d: 0.03, type: 'bandpass', f: 900 + Math.random() * 2500, q: 2 });
+  },
+  enterUnderground(o, t) {
+    noiseHit(o, t, { vol: 0.35, a: 0.05, d: 0.55, type: 'bandpass', f: 2500, q: 0.8, to: 300 });
+    voice(o, t + 0.45, 60, { vol: 0.5, d: 0.9, bend: 0.5 });
+    noiseHit(o, t + 0.45, { vol: 0.4, d: 0.5, type: 'lowpass', f: 600, to: 120 });
+    for (let k = 0; k < 3; k++) voice(o, t + 0.9 + k * 0.35, 220 - k * 30, { type: 'triangle', vol: 0.07 / (k + 1), d: 0.6, bend: 0.7 });
+    [1760, 1318, 1976].forEach((f, k) => voice(o, t + 1.1 + k * 0.4, f, { vol: 0.04, d: 0.1, bend: 1.5 }));
+  },
+  shuriken(o, t) {
+    noiseHit(o, t, { vol: 0.2, d: 0.08, type: 'bandpass', f: 6000, q: 2, to: 2500 });
+    voice(o, t, 3200 + Math.random() * 400, { vol: 0.03, d: 0.07, bend: 0.8 });
+  },
+  shurikenBurst(o, t) {
+    voice(o, t, 600, { type: 'square', vol: 0.06, d: 0.12, bend: 2.5, cut: 3500 });
+    noiseHit(o, t, { vol: 0.3, a: 0.02, d: 0.35, type: 'bandpass', f: 1500, q: 1, to: 7000 });
+    [1760, 2349].forEach((f, k) => voice(o, t + 0.05 + k * 0.05, f, { type: 'triangle', vol: 0.05, d: 0.12 }));
+  },
+  bubblePop(o, t) {
+    voice(o, t, 500 + Math.random() * 700, { vol: 0.08, d: 0.05, bend: 2 });
+    noiseHit(o, t, { vol: 0.03, d: 0.015, f: 4000 });
+  },
+  bubbleBurst(o, t) {
+    noiseHit(o, t, { vol: 0.4, a: 0.02, d: 0.6, type: 'bandpass', f: 500, q: 0.8, to: 2500 });
+    voice(o, t, 90, { vol: 0.3, d: 0.4, bend: 2 });
+    for (let k = 0; k < 14; k++) voice(o, t + Math.random() * 0.7, 400 + Math.random() * 1200, { vol: 0.06, d: 0.05, bend: 2.2 });
+  },
+  explosion(o, t) {
+    noiseHit(o, t, { vol: 1, d: 0.25, f: 2500 });
+    noiseHit(o, t, { vol: 1, a: 0.01, d: 1.4, type: 'lowpass', f: 1200, to: 90 });
+    voice(o, t, 70, { vol: 0.7, d: 0.9, bend: 0.4 });
+    voice(o, t, 140, { type: 'square', vol: 0.08, d: 0.3, bend: 0.3, cut: 900 });
+    for (let k = 0; k < 8; k++) noiseHit(o, t + 0.1 + Math.random() * 0.6, { vol: 0.1, d: 0.03, type: 'bandpass', f: 1500 + Math.random() * 2500, q: 2 });
+  },
+  stun(o, t) {
+    for (let k = 0; k < 4; k++) voice(o, t + k * 0.08, 1800 - k * 250, { type: 'triangle', vol: 0.07, d: 0.12, detune: 20 });
+    voice(o, t, 2400, { type: 'square', vol: 0.03, d: 0.35, bend: 0.5, cut: 5000 });
+    noiseHit(o, t, { vol: 0.15, d: 0.05, type: 'highpass', f: 4000 });
+  },
+  secret(o, t) {
+    voice(o, t, 45, { vol: 0.45, a: 0.2, d: 1.2, bend: 0.8 });
+    noiseHit(o, t, { vol: 0.15, a: 0.4, d: 0.3, type: 'bandpass', f: 200, q: 1, to: 3000 });
+    [62, 65, 69, 74, 77, 81, 86].forEach((m, k) => voice(o, t + 0.45 + k * 0.07, mtof(m), { type: 'triangle', vol: 0.07, d: 0.35 }));
+    for (const m of [50, 57, 62, 65, 69]) {
+      for (const dt of [-12, 12]) voice(o, t + 1, mtof(m), { type: 'sawtooth', vol: 0.025, a: 0.05, d: 1.5, cut: 2000, detune: dt });
+    }
+    voice(o, t + 1, 40, { vol: 0.4, d: 1.2, bend: 0.7 });
+    [3136, 2637, 3520, 4186, 3136].forEach((f, k) => voice(o, t + 1.1 + k * 0.12, f, { vol: 0.03, d: 0.3 }));
+  },
+};
+
+// Plays a sound; with a world position it fades with distance from the camera and pans.
+function sfx(name, x, y, vol = 1) {
+  if (!actx || actx.state !== 'running' || !SFX[name]) return;
+  if (!settings.thunder && (name === 'thunder' || name === 'thunderFar')) return;
+  const t = actx.currentTime;
+  if (t - (sfxLast[name] || -1) < SFX_GAP) return;
+  let pan = 0;
+  if (x !== undefined) {
+    const dx = x - (cam.x + VIEW_W / 2), dy = y - (cam.y + VIEW_H / 2);
+    vol *= 1 - Math.hypot(dx, dy) / SFX_RANGE;
+    if (vol <= 0.02) return;
+    pan = Math.max(-0.8, Math.min(0.8, dx / (VIEW_W / 2)));
+  }
+  sfxLast[name] = t;
+  const g = actx.createGain();
+  g.gain.value = vol;
+  if (pan && actx.createStereoPanner) {
+    const p = actx.createStereoPanner();
+    p.pan.value = pan;
+    g.connect(p);
+    p.connect(sfxBus);
+  } else {
+    g.connect(sfxBus);
+  }
+  SFX[name](g, t + 0.005);
+  setTimeout(() => g.disconnect(), 3500);
+}
+
+const CHEST_HIT_SFX = { wood: 'chestHit', silver: 'chestSilver', stone: 'chestStone', ice: 'chestIce', armor: 'chestArmor', magma: 'chestMagma', thunder: 'chestThunder' };
+// Louder biomes get louder effects so they still cut through the music.
+const SFX_BOOST = { menu: 1, happy: 1, quirky: 1.15, snow: 1.5, thunder: 1.6, volcano: 2, cave: 1.2 };
+// The boost shrinks along with the music volume, since quieter music needs less help.
+function applySfxLevel(fade = 0.5) {
+  if (!sfxBus) return;
+  const boost = 1 + ((SFX_BOOST[musicRegionNow] || 1) - 1) * Math.min(1, settings.music / 100);
+  sfxBus.gain.setTargetAtTime(soundMuted ? 0 : SFX_VOL * boost * settings.sfx / 100, actx.currentTime, fade);
+}
+
+const punchSfx = key => {
+  if (!key || key === 'punch') return 'punchHit';
+  return ITEMS[key] && ITEMS[key].style === 'gauntlet' ? 'gauntletHit' : '';
+};
+const swingSfx = key => {
+  const it = ITEMS[key];
+  if (!it || it.kind !== 'melee') return '';
+  return it.style === 'sword' || it.style === 'dagger' ? 'slash' : it.style === 'katana' || it.style === 'trident' ? 'katana' : '';
+};
+
+// Continuous sounds that follow the player's state: jetpack thrust, bow draw, radar expiry,
+// laser hum, flamethrower roar and the refuel whine.
+let jetGain = null, chargeTone = null, chargeDinged = false, radarWasOn = false;
+let laserGain = null, flameGain = null, refuelGain = null, refuelOsc = null;
+let laserWas = false, flameWas = false, refuelWas = false;
+
+const lfo = (hz, depth, target) => {
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.value = hz;
+  g.gain.value = depth;
+  o.connect(g).connect(target);
+  o.start();
+};
+const loopOut = () => {
+  const g = actx.createGain();
+  g.gain.value = 0;
+  g.connect(sfxBus);
+  return g;
+};
+
+function buildLoops() {
+  buildJetLoop();
+
+  laserGain = loopOut();
+  const lf = actx.createBiquadFilter();
+  lf.type = 'bandpass';
+  lf.frequency.value = 1000;
+  lf.Q.value = 2;
+  lfo(7, 350, lf.frequency);
+  for (const f of [180, 183.5, 360]) {
+    const o = actx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = f;
+    o.connect(lf);
+    o.start();
+  }
+  lf.connect(laserGain);
+  const whine = actx.createOscillator(), wg = actx.createGain();
+  whine.frequency.value = 1500;
+  lfo(9, 25, whine.frequency);
+  wg.gain.value = 0.25;
+  whine.connect(wg).connect(laserGain);
+  whine.start();
+
+  flameGain = loopOut();
+  const body = actx.createGain();
+  body.gain.value = 0.8;
+  lfo(23, 0.25, body.gain);
+  const roar = actx.createBiquadFilter();
+  roar.type = 'bandpass';
+  roar.frequency.value = 280;
+  roar.Q.value = 0.9;
+  const hiss = actx.createBiquadFilter();
+  hiss.type = 'lowpass';
+  hiss.frequency.value = 2200;
+  const hg = actx.createGain();
+  hg.gain.value = 0.3;
+  const src = loopNoise();
+  src.connect(roar).connect(body);
+  src.connect(hiss).connect(hg).connect(body);
+  body.connect(flameGain);
+
+  refuelGain = loopOut();
+  refuelOsc = actx.createOscillator();
+  refuelOsc.type = 'triangle';
+  refuelOsc.frequency.value = 300;
+  const trem = actx.createGain();
+  trem.gain.value = 0.6;
+  lfo(11, 0.4, trem.gain);
+  refuelOsc.connect(trem).connect(refuelGain);
+  refuelOsc.start();
+}
+
+function buildJetLoop() {
+  const src = loopNoise();
+  const low = actx.createBiquadFilter();
+  low.type = 'lowpass';
+  low.frequency.value = 700;
+  const hiss = actx.createBiquadFilter();
+  hiss.type = 'bandpass';
+  hiss.frequency.value = 2500;
+  hiss.Q.value = 0.8;
+  const hg = actx.createGain();
+  hg.gain.value = 0.25;
+  const flutter = actx.createOscillator();
+  flutter.frequency.value = 18;
+  const fg = actx.createGain();
+  fg.gain.value = 0.25;
+  jetGain = actx.createGain();
+  jetGain.gain.value = 0;
+  const body = actx.createGain();
+  body.gain.value = 0.75;
+  flutter.connect(fg).connect(body.gain);
+  flutter.start();
+  src.connect(low).connect(body);
+  src.connect(hiss).connect(hg).connect(body);
+  body.connect(jetGain).connect(sfxBus);
+}
+
+function startChargeTone() {
+  const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain(), fl = actx.createBiquadFilter();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(110, t);
+  o.frequency.exponentialRampToValueAtTime(330, t + BOW_CHARGE_TIME);
+  fl.type = 'lowpass';
+  fl.frequency.value = 900;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.05, t + 0.1);
+  o.connect(fl).connect(g).connect(sfxBus);
+  o.start(t);
+  noiseHit(sfxBus, t, { vol: 0.08, d: 0.15, type: 'bandpass', f: 1200, q: 3 });
+  chargeTone = { o, g };
+}
+
+function stopChargeTone() {
+  if (!chargeTone) return;
+  const t = actx.currentTime;
+  chargeTone.g.gain.setTargetAtTime(0, t, 0.02);
+  chargeTone.o.stop(t + 0.15);
+  chargeTone = null;
+}
+
+function updateSfx() {
+  if (!actx || actx.state !== 'running') return;
+  const playing = state === 'game' && !me.dead;
+  jetGain.gain.setTargetAtTime(playing && me.jetting ? 0.35 : 0, actx.currentTime, 0.04);
+  const drawing = playing && me.charging && heldItem().kind === 'bow';
+  if (drawing && !chargeTone) {
+    startChargeTone();
+    chargeDinged = false;
+  }
+  if (!drawing) stopChargeTone();
+  if (drawing && !chargeDinged && me.chargeT >= BOW_CHARGE_TIME) {
+    chargeDinged = true;
+    sfx('chargeReady');
+  }
+  const radarOn = playing && radarActive();
+  if (radarWasOn && !radarOn && !me.dead) sfx('radarOff');
+  radarWasOn = radarOn;
+
+  const now = actx.currentTime, it = heldItem();
+  const beam = playing && !!me.beam && it.kind === 'laser';
+  const flame = beam && !!it.flame, laser = beam && !it.flame && !it.bubble;
+  if (beam && it.bubble && Math.random() < 0.35) sfx('bubblePop', undefined, undefined, 0.6 + Math.random() * 0.4);
+  if (laser && !laserWas) sfx('laserStart');
+  if (flame && !flameWas) sfx('flameStart');
+  laserWas = laser;
+  flameWas = flame;
+  laserGain.gain.setTargetAtTime(laser ? 0.07 : 0, now, 0.03);
+  flameGain.gain.setTargetAtTime(flame ? 0.45 : 0, now, 0.04);
+  if (flame && Math.random() < 0.3) noiseHit(sfxBus, now, { vol: 0.04 + Math.random() * 0.08, d: 0.02, f: 3000 + Math.random() * 4000 });
+  const full = it.kind === 'laser' && me.fuel >= fuelMax(it);
+  const refill = playing && it.kind === 'laser' && me.refueling && !me.beam && me.laserOut <= 0 && !full;
+  if (refill) refuelOsc.frequency.setTargetAtTime(250 + 650 * me.fuel / fuelMax(it), now, 0.05);
+  refuelGain.gain.setTargetAtTime(refill ? 0.06 : 0, now, 0.03);
+  if (refuelWas && full && me.refueling) sfx('refuelFull');
+  refuelWas = refill;
 }
 
 // ---------------------------------------------------------------------------
@@ -5084,13 +7791,18 @@ function frame(now) {
     updateParticles(dt);
     updateSnow(dt);
     updateVolcano(dt);
+    updateStormWeather(dt);
+    updateClouds(dt);
     updateDamageNumbers(dt);
     updateCamera(dt);
     drawGame();
   } else {
     updateParticles(dt);
+    updateStormWeather(dt);
     drawMenu();
   }
+  updateMusic();
+  updateSfx();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
